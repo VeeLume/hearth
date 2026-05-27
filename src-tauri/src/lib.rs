@@ -1,11 +1,9 @@
 //! Tauri shell for Hearth.
 //!
-//! Stage 0: minimal window with no commands.
-//! Stage 1 (current): app state (sqlite pool), Tauri commands for the BP
-//!   catalog + ownership + wishlist, specta TypeScript bindings exported
-//!   to `src/lib/bindings.ts` in debug builds.
-//! Stage 4: write owned-blueprints JSON via `hearth-export`.
-//! v1.5: sensors module (Game.log tailing) lives in `src/sensors/`.
+//! Stage 2 (current): real SC data loading via sc_installs + sc-extract,
+//!   cached on `AppState` so the first BP catalog call pays the heavy
+//!   Datacore parse cost (~10s) once. Subsequent calls return instantly
+//!   from the cached `LoadedScData`.
 
 use std::path::PathBuf;
 
@@ -14,17 +12,23 @@ use hearth_storage::DbPool;
 use specta_typescript::Typescript;
 use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
+use tokio::sync::Mutex;
 
 pub mod error;
 pub mod sc_loader;
 pub mod sensors;
 
 use error::AppError;
+use sc_loader::LoadedScData;
 
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct AppState {
     db: DbPool,
+    /// Cached SC reference data. `None` until the first BP-catalog call
+    /// completes; subsequent calls reuse it. tokio Mutex so the lock
+    /// can be held across the blocking-thread spawn.
+    sc_data: Mutex<Option<LoadedScData>>,
 }
 
 /// `%APPDATA%/hearth/hearth.db` on Windows.
@@ -38,10 +42,25 @@ fn db_path() -> PathBuf {
 
 #[tauri::command]
 #[specta::specta]
-fn list_blueprints() -> Vec<BpView> {
-    // Stage 1: stub. Stage 2 wires the real sc-holotable loader and
-    // caches the Datacore on AppState so subsequent calls are cheap.
-    sc_loader::load_blueprints()
+async fn list_blueprints(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<BpView>, AppError> {
+    let mut guard = state.sc_data.lock().await;
+
+    if guard.is_none() {
+        // Heavy: Datacore parse + LocaleMap build. Run on the blocking
+        // thread pool so the Tauri runtime thread stays responsive.
+        let loaded = tauri::async_runtime::spawn_blocking(LoadedScData::load_blocking)
+            .await
+            .map_err(|e| AppError::Internal(format!("sc_loader task join: {e}")))?
+            .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
+        *guard = Some(loaded);
+    }
+
+    Ok(guard
+        .as_ref()
+        .map(|d| d.blueprints())
+        .unwrap_or_default())
 }
 
 #[tauri::command]
@@ -120,8 +139,8 @@ pub fn run() {
         remove_from_wishlist,
     ]);
 
-    // Export TypeScript bindings in debug builds. Release builds don't need
-    // this — bindings are committed to src/lib/bindings.ts.
+    // Export TypeScript bindings in debug builds. Release builds use the
+    // committed src/lib/bindings.ts as-is.
     #[cfg(debug_assertions)]
     builder
         .export(Typescript::default(), "../src/lib/bindings.ts")
@@ -131,15 +150,17 @@ pub fn run() {
         .setup(|app| {
             // Open the SQLite pool asynchronously, then attach to managed
             // state. Failure here is fatal — without storage the app can't
-            // do anything useful, so we surface it as a panic on the setup
-            // thread (Tauri shows it in the console + crash dialog).
+            // do anything useful.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let path = db_path();
                 let pool = hearth_storage::open(&path)
                     .await
                     .expect("opening hearth.db");
-                handle.manage(AppState { db: pool });
+                handle.manage(AppState {
+                    db: pool,
+                    sc_data: Mutex::new(None),
+                });
             });
             Ok(())
         })

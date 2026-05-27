@@ -1446,6 +1446,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "dirs",
+ "encoding_rs",
  "hearth-core",
  "hearth-export",
  "hearth-storage",
@@ -1461,6 +1462,7 @@ dependencies = [
  "tauri-specta",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

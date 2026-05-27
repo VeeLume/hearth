@@ -5,8 +5,13 @@
 
 
 export const commands = {
-async listBlueprints() : Promise<BpView[]> {
-    return await TAURI_INVOKE("list_blueprints");
+async listBlueprints() : Promise<Result<BpView[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_blueprints") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async listOwned() : Promise<Result<OwnedBlueprint[], AppError>> {
     try {
