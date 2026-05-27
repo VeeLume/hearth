@@ -11,5 +11,6 @@ description = "Domain types and logic for Hearth. Pure — no transport, no stor
 serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+specta.workspace = true
 sc-contracts.workspace = true
 sc-extract.workspace = true

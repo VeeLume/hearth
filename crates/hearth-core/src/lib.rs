@@ -1,6 +1,9 @@
-//! Hearth domain types and logic. Pure — no transport, no storage.
+//! Hearth domain types and logic. Pure — no transport, no storage, no I/O.
 //!
-//! Stage 1 (Data primitives) will define `OwnedBlueprint`,
-//! `MissionCompletion`, `WishlistEntry`. UUIDv7 IDs, serde-friendly.
+//! Types here are linked by both desktop (`hearth-app`) and server
+//! (`hearth-server`, v2+) so domain stays single-source-of-truth.
 
 pub mod sc_data;
+pub mod types;
+
+pub use types::{BpView, MissionCompletion, OwnedBlueprint, RecordId, WishlistEntry};
