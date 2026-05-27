@@ -1,54 +1,48 @@
 //! Loads SC reference data (blueprints, locale, …) from the local
 //! game install.
 //!
-//! Pipeline (executed once per app session, cached on `AppState`):
+//! # Channel selection
 //!
-//! ```text
-//! sc_installs::discover()
-//!   → Installation (one of LIVE/PTU/Hotfix/EPTU/TechPreview)
-//!   → AssetSource::open(install.data_p4k())
-//!   → Data/Localization/english/global.ini  → UTF-16 LE decode → LocaleMap
-//!   → AssetData::extract(AssetConfig::minimal())
-//!   → Datacore::parse(DatacoreConfig::standard())  // also builds LocalizedItemCache
-//!   → BlueprintPoolRegistry::build(&datacore)
-//! ```
+//! `sc_installs::discover()` returns every installed channel. We pick
+//! the highest-priority one (`Channel::priority`: Live=0, Hotfix=1,
+//! Ptu=2, Eptu=3, TechPreview=4) so the default catalog reflects the
+//! most-stable available install. The chosen install's
+//! [`ChannelGroup`] (PU vs Test) is recorded on the resulting
+//! `LoadedScData` and threaded through every personal-data write so
+//! PU progress can't be polluted by test-shard data.
 //!
-//! # Stack-size workaround
+//! # Stack-size workaround (Windows)
 //!
 //! sc-extract-generated's `record_store` decoder has match arms deep
-//! enough to overflow the default thread stack on Windows (~1 MiB for
-//! secondary threads, ~2 MiB for tokio workers by default — neither is
-//! enough). Pattern lifted from sc-langpatch's `preview::load_on_big_stack`
-//! and bulkhead's `data::LOADER_STACK_SIZE`: spin up a dedicated
-//! `std::thread` with an explicit 16 MiB stack, run the load to
-//! completion, and `join()` the result back.
+//! enough to overflow the default thread stack on Windows. Two things
+//! together make this work:
+//!
+//! 1. Run `load_inner` on a dedicated `std::thread` with an explicit
+//!    32 MiB stack (matches bulkhead's `LOADER_STACK_SIZE`).
+//! 2. Return `Box<LoadedScData>` through the bridge — boxing on the
+//!    loader thread means only an 8-byte pointer crosses the mpsc
+//!    channel into the (small-stack) tokio blocking receiver. An
+//!    unboxed return overflowed the receiver's stack mid-move.
 
 use std::sync::mpsc;
 
 use anyhow::{Context, Result};
-use hearth_core::BpView;
+use hearth_core::{BpView, ChannelGroup};
 use sc_contracts::BlueprintPoolRegistry;
 use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, LocaleMap};
+use sc_installs::Channel;
 
-/// 32 MiB — matches bulkhead's `LOADER_STACK_SIZE`. 16 MiB *was*
-/// enough to run the parse itself, but the mpsc receiver (which sits
-/// on tokio's small-stack blocking pool) overflowed when the unboxed
-/// `LoadedScData` struct moved through the channel. The fix is twofold:
-/// box the result so only an 8-byte pointer crosses the bridge, and
-/// give the loader thread plenty of headroom while we're at it.
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
-/// SC reference data + the LocaleMap needed to resolve display names.
-/// Held on `AppState` behind a tokio Mutex so the heavy parse runs at
-/// most once per app session.
 pub struct LoadedScData {
-    /// Channel name (e.g. "LIVE") for the install we loaded from.
-    pub channel: String,
-    /// Pre-computed BP catalog. Built once at load time on the loader
-    /// thread; returned by reference on every later call.
+    /// Specific channel that produced this dataset (Live, Hotfix, …).
+    pub channel: Channel,
+    /// Stability grouping: PU (Live + Hotfix) or Test (everything else).
+    pub channel_group: ChannelGroup,
+    /// Pre-computed BP catalog.
     blueprints: Vec<BpView>,
-    /// Held for future stage work (mission lookup, name resolution of
-    /// freshly-fetched records); not used during catalog access.
+    /// Held for future stage work (mission lookup, dynamic name
+    /// resolution); not used during catalog reads.
     #[allow(dead_code)]
     datacore: Datacore,
     #[allow(dead_code)]
@@ -56,20 +50,15 @@ pub struct LoadedScData {
 }
 
 impl LoadedScData {
-    /// Spawn a dedicated big-stack thread, run the load on it, return
-    /// a boxed result via mpsc. The result is boxed *inside* the loader
-    /// thread so the move across the channel into a (small-stack)
-    /// tokio blocking thread only copies an 8-byte pointer — moving
-    /// the full struct through there overflows even with a generous
-    /// stack on this side.
+    /// Spawn a dedicated 32 MiB-stack thread, load on it, return a
+    /// `Box<Self>` via mpsc. See module docs for the stack rationale.
     pub async fn load_async() -> Result<Box<Self>> {
         let (tx, rx) = mpsc::channel::<Result<Box<Self>>>();
         std::thread::Builder::new()
             .name("hearth-sc-loader".into())
             .stack_size(LOADER_STACK_SIZE)
             .spawn(move || {
-                let result = Self::load_inner().map(Box::new);
-                let _ = tx.send(result);
+                let _ = tx.send(Self::load_inner().map(Box::new));
             })
             .context("spawning sc-loader thread")?;
         tokio::task::spawn_blocking(move || rx.recv())
@@ -79,44 +68,70 @@ impl LoadedScData {
     }
 
     pub fn load_inner() -> Result<Self> {
-        let installs = sc_installs::discover().context("sc_installs::discover")?;
-        let install = installs
-            .into_iter()
-            .next()
-            .context("no Star Citizen installations detected")?;
-        let channel = install.channel.to_string();
+        let mut installs = sc_installs::discover().context("sc_installs::discover")?;
+        if installs.is_empty() {
+            anyhow::bail!("no Star Citizen installations detected");
+        }
+        // Highest priority first (Live → Hotfix → PTU → EPTU → Tech).
+        installs.sort_by_key(|i| i.channel.priority());
+        let install = installs.into_iter().next().expect("non-empty");
+        let channel = install.channel;
+        let channel_group = group_for(channel);
+
         let p4k_path = install.data_p4k();
         let assets = AssetSource::open(&p4k_path)
-            .with_context(|| format!("opening Data.p4k for channel {channel}"))?;
+            .with_context(|| format!("opening Data.p4k for {:?}", channel))?;
 
         let ini_bytes = assets
             .read("Data/Localization/english/global.ini")
             .context("reading global.ini from p4k")?;
         let locale = build_locale_map(&ini_bytes)?;
 
-        tracing::info!("extracting AssetData");
+        tracing::info!("extracting AssetData ({:?})", channel);
         let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
             .context("AssetData::extract")?;
-        tracing::info!("parsing Datacore");
+        tracing::info!("parsing Datacore ({:?})", channel);
         let datacore = Datacore::parse(&assets, &asset_data, &DatacoreConfig::standard())
             .context("Datacore::parse")?;
         drop(assets);
 
         tracing::info!("building blueprint catalog");
         let blueprints = build_blueprints(&datacore, &locale);
-        tracing::info!(count = blueprints.len(), "blueprint catalog ready");
+        tracing::info!(
+            count = blueprints.len(),
+            channel = ?channel,
+            group = channel_group.as_str(),
+            "blueprint catalog ready"
+        );
 
         Ok(Self {
             channel,
+            channel_group,
             blueprints,
             datacore,
             locale,
         })
     }
 
-    /// Cheap slice-clone of the pre-built BP catalog.
     pub fn blueprints(&self) -> Vec<BpView> {
         self.blueprints.clone()
+    }
+
+    /// RSI account this dataset is associated with. Empty until we
+    /// surface launcher-store account info (sc-installs reads it but
+    /// we haven't plumbed it through). Single source of truth for the
+    /// `Scope::account_id` the storage layer expects.
+    pub fn account_id(&self) -> &str {
+        ""
+    }
+}
+
+/// Stable-channel detection. Live + Hotfix share the persistent
+/// universe; everything else runs on test shards that wipe.
+fn group_for(channel: Channel) -> ChannelGroup {
+    match channel {
+        Channel::Live | Channel::Hotfix => ChannelGroup::Pu,
+        Channel::Ptu | Channel::Eptu | Channel::TechPreview => ChannelGroup::Test,
     }
 }
 

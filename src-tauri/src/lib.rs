@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use hearth_core::{BpView, OwnedBlueprint, WishlistEntry};
-use hearth_storage::DbPool;
+use hearth_core::{BpView, ChannelGroup, OwnedBlueprint, WishlistEntry};
+use hearth_storage::{DbPool, Scope};
 use specta_typescript::Typescript;
 use tauri_specta::{Builder, collect_commands};
 use tokio::sync::{Mutex, OnceCell};
@@ -18,13 +18,17 @@ use sc_loader::LoadedScData;
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct AppState {
-    /// Cached SC reference data. Boxed so the full struct never crosses
-    /// a small-stack thread boundary (see `sc_loader::load_async`).
-    sc_data: Mutex<Option<Box<LoadedScData>>>,
-    /// SQLite pool, lazily initialized on first DB-needing command.
-    /// Using `tokio::sync::OnceCell` so the pool is created on Tauri's
-    /// own tokio runtime (not a temporary one that gets dropped),
-    /// and concurrent first-callers don't race.
+    /// Cached SC reference data. Boxed because the unboxed struct
+    /// overflows the small-stack tokio receiver mid-move (see
+    /// `sc_loader` docs).
+    ///
+    /// One entry per `ChannelGroup` — PU and Test are loaded
+    /// independently so switching between them later doesn't trash
+    /// the other's cache. Stage 2 only loads the active group on
+    /// first call; Stage 3 wires a UI switch.
+    sc_data: Mutex<std::collections::HashMap<ChannelGroup, Box<LoadedScData>>>,
+    /// SQLite pool, lazily initialized on first DB-needing command on
+    /// Tauri's own tokio runtime.
     db: OnceCell<DbPool>,
 }
 
@@ -37,6 +41,41 @@ impl AppState {
                     .map_err(|e| AppError::Storage(format!("{e:#}")))
             })
             .await
+    }
+
+    /// Returns the loaded data for the currently-active channel group.
+    /// In Stage 2 there's only ever one — whichever was loaded first
+    /// (the highest-priority install per `sc_loader::load_inner`).
+    /// Loads on demand if not present.
+    async fn loaded(&self) -> Result<LoadedRef<'_>, AppError> {
+        let mut guard = self.sc_data.lock().await;
+        if guard.is_empty() {
+            let loaded = LoadedScData::load_async()
+                .await
+                .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
+            guard.insert(loaded.channel_group, loaded);
+        }
+        Ok(LoadedRef { guard })
+    }
+}
+
+/// RAII handle to the active loaded data. Drops the lock when it goes
+/// out of scope. Tauri commands borrow through this for the duration
+/// of their await.
+struct LoadedRef<'a> {
+    guard: tokio::sync::MutexGuard<'a, std::collections::HashMap<ChannelGroup, Box<LoadedScData>>>,
+}
+
+impl<'a> LoadedRef<'a> {
+    fn data(&self) -> &LoadedScData {
+        // Pick any (Stage 2 has at most one); deterministic for Stage 3
+        // when we switch by storing an explicit "active" group on state.
+        self.guard.values().next().expect("loaded data present")
+    }
+
+    fn scope(&self) -> Scope<'_> {
+        let d = self.data();
+        Scope::new(d.channel_group, d.account_id())
     }
 }
 
@@ -54,24 +93,19 @@ fn db_path() -> PathBuf {
 async fn list_blueprints(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<BpView>, AppError> {
-    let mut guard = state.sc_data.lock().await;
-    if guard.is_none() {
-        let loaded = LoadedScData::load_async()
-            .await
-            .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
-        *guard = Some(loaded);
-    }
-    Ok(guard
-        .as_ref()
-        .map(|d| d.blueprints())
-        .unwrap_or_default())
+    let loaded = state.loaded().await?;
+    Ok(loaded.data().blueprints())
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn list_owned(state: tauri::State<'_, AppState>) -> Result<Vec<OwnedBlueprint>, AppError> {
+async fn list_owned(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<OwnedBlueprint>, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::list_owned(db)
+    hearth_storage::list_owned(db, scope)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -82,8 +116,10 @@ async fn add_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<OwnedBlueprint, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::add_owned(db, &blueprint_guid)
+    hearth_storage::add_owned(db, scope, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -94,8 +130,10 @@ async fn remove_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::remove_owned(db, &blueprint_guid)
+    hearth_storage::remove_owned(db, scope, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -105,8 +143,10 @@ async fn remove_owned(
 async fn list_wishlist(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WishlistEntry>, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::list_wishlist(db)
+    hearth_storage::list_wishlist(db, scope)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -117,8 +157,10 @@ async fn add_to_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<WishlistEntry, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::add_to_wishlist(db, &blueprint_guid)
+    hearth_storage::add_to_wishlist(db, scope, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -129,10 +171,34 @@ async fn remove_from_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
+    let loaded = state.loaded().await?;
+    let scope = loaded.scope();
     let db = state.db().await?;
-    hearth_storage::remove_from_wishlist(db, &blueprint_guid)
+    hearth_storage::remove_from_wishlist(db, scope, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
+}
+
+/// Surface the active channel + group + account to the UI so it can
+/// show "PU (LIVE)" or "Test (PTU)" badges and (eventually) drive a
+/// channel switcher.
+#[tauri::command]
+#[specta::specta]
+async fn active_scope(state: tauri::State<'_, AppState>) -> Result<ActiveScope, AppError> {
+    let loaded = state.loaded().await?;
+    let d = loaded.data();
+    Ok(ActiveScope {
+        channel: d.channel.display_name().to_string(),
+        channel_group: d.channel_group,
+        account_id: d.account_id().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct ActiveScope {
+    channel: String,
+    channel_group: ChannelGroup,
+    account_id: String,
 }
 
 // ── App setup ───────────────────────────────────────────────────────────────
@@ -140,7 +206,7 @@ async fn remove_from_wishlist(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState {
-        sc_data: Mutex::new(None),
+        sc_data: Mutex::new(std::collections::HashMap::new()),
         db: OnceCell::new(),
     };
 
@@ -152,6 +218,7 @@ pub fn run() {
         list_wishlist,
         add_to_wishlist,
         remove_from_wishlist,
+        active_scope,
     ]);
 
     #[cfg(debug_assertions)]

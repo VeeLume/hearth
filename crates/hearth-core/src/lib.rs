@@ -6,4 +6,6 @@
 pub mod sc_data;
 pub mod types;
 
-pub use types::{BpView, MissionCompletion, OwnedBlueprint, RecordId, WishlistEntry};
+pub use types::{
+    BpView, ChannelGroup, MissionCompletion, OwnedBlueprint, RecordId, WishlistEntry,
+};

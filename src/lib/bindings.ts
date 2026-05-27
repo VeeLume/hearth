@@ -60,6 +60,19 @@ async removeFromWishlist(blueprintGuid: string) : Promise<Result<boolean, AppErr
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Surface the active channel + group + account to the UI so it can
+ * show "PU (LIVE)" or "Test (PTU)" badges and (eventually) drive a
+ * channel switcher.
+ */
+async activeScope() : Promise<Result<ActiveScope, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("active_scope") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -73,6 +86,7 @@ async removeFromWishlist(blueprintGuid: string) : Promise<Result<boolean, AppErr
 
 /** user-defined types **/
 
+export type ActiveScope = { channel: string; channel_group: ChannelGroup; account_id: string }
 export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Internal"; message: string }
 /**
  * Lean view of a sc-contracts `BlueprintItem` for the catalog UI.
@@ -88,8 +102,27 @@ export type BpView = { pool_guid: string; pool_name: string; blueprint_record_gu
  */
 display_name: string | null; weight: number }
 /**
- * A blueprint the user has acquired in-game. Unique by `blueprint_guid`
- * (you can't own the same BP twice).
+ * Which set of SC servers a piece of personal state belongs to.
+ * 
+ * SC's Live and Hotfix channels share the persistent universe (PU);
+ * progress in one persists into the other. PTU, EPTU, and Tech Preview
+ * run on separate test shards that wipe regularly. We keep them
+ * strictly separated so test progress never pollutes the PU state.
+ */
+export type ChannelGroup = 
+/**
+ * Persistent Universe (Live + Hotfix). Long-lived state.
+ */
+"pu" | 
+/**
+ * Test shards (PTU, EPTU, TechPreview). Wipes frequently.
+ */
+"test"
+/**
+ * A blueprint the user has acquired in-game. Unique by
+ * `(blueprint_guid, channel_group, account_id)` — the same BP can be
+ * "owned" independently in PU and on the test shards, and (later)
+ * across multiple RSI accounts on the same desktop.
  */
 export type OwnedBlueprint = { id: RecordId; 
 /**
@@ -97,7 +130,13 @@ export type OwnedBlueprint = { id: RecordId;
  * uses externally. String here so the type stays serde/specta-friendly
  * without pulling sc-extract into the IPC layer.
  */
-blueprint_guid: string; owned_at: string }
+blueprint_guid: string; channel_group: ChannelGroup; 
+/**
+ * RSI account this ownership belongs to. Empty string until
+ * account detection lands — accommodates the v1 single-account
+ * default while keeping the column shape stable for later.
+ */
+account_id: string; owned_at: string }
 /**
  * Stable record-level identifier. UUIDv7 so it's time-sortable and
  * generated client-side without a central authority. Wraps `Uuid` rather
@@ -108,7 +147,7 @@ export type RecordId = string
 /**
  * A blueprint the user wants. Surfaces in lists / craft suggestions.
  */
-export type WishlistEntry = { id: RecordId; blueprint_guid: string; added_at: string }
+export type WishlistEntry = { id: RecordId; blueprint_guid: string; channel_group: ChannelGroup; account_id: string; added_at: string }
 
 /** tauri-specta globals **/
 
