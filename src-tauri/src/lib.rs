@@ -1,10 +1,4 @@
 //! Tauri shell for Hearth.
-//!
-//! Initialization shape mirrors sc-langpatch's: synchronous `.manage()`
-//! call on a fully-built `AppState`, no async work inside `.setup()`.
-//! The DB pool open is bridged through a dedicated thread because sqlx
-//! is tokio-native and Tauri's runtime hasn't started yet when we're
-//! constructing state.
 
 use std::path::PathBuf;
 
@@ -12,7 +6,7 @@ use hearth_core::{BpView, OwnedBlueprint, WishlistEntry};
 use hearth_storage::DbPool;
 use specta_typescript::Typescript;
 use tauri_specta::{Builder, collect_commands};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 pub mod error;
 pub mod sc_loader;
@@ -24,10 +18,26 @@ use sc_loader::LoadedScData;
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct AppState {
-    db: DbPool,
-    /// Cached SC reference data. `None` until the first BP-catalog call
-    /// completes; subsequent calls reuse it.
-    sc_data: Mutex<Option<LoadedScData>>,
+    /// Cached SC reference data. Boxed so the full struct never crosses
+    /// a small-stack thread boundary (see `sc_loader::load_async`).
+    sc_data: Mutex<Option<Box<LoadedScData>>>,
+    /// SQLite pool, lazily initialized on first DB-needing command.
+    /// Using `tokio::sync::OnceCell` so the pool is created on Tauri's
+    /// own tokio runtime (not a temporary one that gets dropped),
+    /// and concurrent first-callers don't race.
+    db: OnceCell<DbPool>,
+}
+
+impl AppState {
+    async fn db(&self) -> Result<&DbPool, AppError> {
+        self.db
+            .get_or_try_init(|| async {
+                hearth_storage::open(&db_path())
+                    .await
+                    .map_err(|e| AppError::Storage(format!("{e:#}")))
+            })
+            .await
+    }
 }
 
 /// `%APPDATA%/hearth/hearth.db` on Windows.
@@ -35,33 +45,6 @@ fn db_path() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("hearth").join("hearth.db"))
         .expect("OS data dir not resolvable")
-}
-
-/// Open the SQLite pool synchronously before Tauri's runtime starts.
-///
-/// Runs the async sqlx setup on a dedicated `std::thread` with its own
-/// current-thread tokio runtime. The thread gets an 8 MiB stack — sqlx
-/// itself doesn't need that much, but every tokio-using thread on
-/// Windows wants the headroom and giving it here costs nothing.
-fn init_db_pool() -> anyhow::Result<DbPool> {
-    std::thread::Builder::new()
-        .name("hearth-db-init".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(|| -> anyhow::Result<DbPool> {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            rt.block_on(hearth_storage::open(&db_path()))
-        })?
-        .join()
-        .map_err(|panic| {
-            let msg = panic
-                .downcast_ref::<&'static str>()
-                .copied()
-                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("(no message)");
-            anyhow::anyhow!("db-init thread panicked: {msg}")
-        })?
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -72,14 +55,12 @@ async fn list_blueprints(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<BpView>, AppError> {
     let mut guard = state.sc_data.lock().await;
-
     if guard.is_none() {
         let loaded = LoadedScData::load_async()
             .await
             .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
         *guard = Some(loaded);
     }
-
     Ok(guard
         .as_ref()
         .map(|d| d.blueprints())
@@ -89,7 +70,8 @@ async fn list_blueprints(
 #[tauri::command]
 #[specta::specta]
 async fn list_owned(state: tauri::State<'_, AppState>) -> Result<Vec<OwnedBlueprint>, AppError> {
-    hearth_storage::list_owned(&state.db)
+    let db = state.db().await?;
+    hearth_storage::list_owned(db)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -100,7 +82,8 @@ async fn add_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<OwnedBlueprint, AppError> {
-    hearth_storage::add_owned(&state.db, &blueprint_guid)
+    let db = state.db().await?;
+    hearth_storage::add_owned(db, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -111,7 +94,8 @@ async fn remove_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
-    hearth_storage::remove_owned(&state.db, &blueprint_guid)
+    let db = state.db().await?;
+    hearth_storage::remove_owned(db, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -121,7 +105,8 @@ async fn remove_owned(
 async fn list_wishlist(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WishlistEntry>, AppError> {
-    hearth_storage::list_wishlist(&state.db)
+    let db = state.db().await?;
+    hearth_storage::list_wishlist(db)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -132,7 +117,8 @@ async fn add_to_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<WishlistEntry, AppError> {
-    hearth_storage::add_to_wishlist(&state.db, &blueprint_guid)
+    let db = state.db().await?;
+    hearth_storage::add_to_wishlist(db, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -143,7 +129,8 @@ async fn remove_from_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
-    hearth_storage::remove_from_wishlist(&state.db, &blueprint_guid)
+    let db = state.db().await?;
+    hearth_storage::remove_from_wishlist(db, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
@@ -152,15 +139,9 @@ async fn remove_from_wishlist(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Open the SQLite pool synchronously BEFORE Tauri starts its runtime.
-    // This avoids the race where the frontend would invoke a command
-    // before state is managed, and keeps the heavy initialization off
-    // Tauri's small-stack worker threads.
-    let db = init_db_pool().expect("opening hearth.db");
-
     let state = AppState {
-        db,
         sc_data: Mutex::new(None),
+        db: OnceCell::new(),
     };
 
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![

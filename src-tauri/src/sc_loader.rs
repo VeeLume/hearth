@@ -30,10 +30,13 @@ use hearth_core::BpView;
 use sc_contracts::BlueprintPoolRegistry;
 use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, LocaleMap};
 
-/// 16 MiB — matches the upper end of what bulkhead uses (32 MiB) but
-/// chosen lower since Hearth only parses Datacore + Blueprints, not
-/// the larger snapshot machinery bulkhead drives.
-pub const LOADER_STACK_SIZE: usize = 16 * 1024 * 1024;
+/// 32 MiB — matches bulkhead's `LOADER_STACK_SIZE`. 16 MiB *was*
+/// enough to run the parse itself, but the mpsc receiver (which sits
+/// on tokio's small-stack blocking pool) overflowed when the unboxed
+/// `LoadedScData` struct moved through the channel. The fix is twofold:
+/// box the result so only an 8-byte pointer crosses the bridge, and
+/// give the loader thread plenty of headroom while we're at it.
+pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 /// SC reference data + the LocaleMap needed to resolve display names.
 /// Held on `AppState` behind a tokio Mutex so the heavy parse runs at
@@ -53,51 +56,29 @@ pub struct LoadedScData {
 }
 
 impl LoadedScData {
-    /// Spawn a dedicated 16 MiB-stack thread, run the load on it, and
-    /// return the result. Synchronous from the caller's perspective —
-    /// joins the thread before returning. See module docstring for why
-    /// we need the bigger stack.
-    pub fn load_on_big_stack() -> Result<Self> {
-        std::thread::Builder::new()
-            .name("hearth-sc-loader".into())
-            .stack_size(LOADER_STACK_SIZE)
-            .spawn(Self::load_inner)
-            .context("spawning sc-loader thread")?
-            .join()
-            .map_err(|panic| {
-                let msg = panic
-                    .downcast_ref::<&'static str>()
-                    .copied()
-                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("(no message)");
-                anyhow::anyhow!("sc-loader thread panicked: {msg}")
-            })?
-    }
-
-    /// Bridge to async: spawn the loader on its own thread, wait for the
-    /// result via a oneshot channel. Holds none of tokio's blocking-pool
-    /// threads — those don't have a large enough stack on Windows.
-    pub async fn load_async() -> Result<Self> {
-        let (tx, rx) = mpsc::channel();
+    /// Spawn a dedicated big-stack thread, run the load on it, return
+    /// a boxed result via mpsc. The result is boxed *inside* the loader
+    /// thread so the move across the channel into a (small-stack)
+    /// tokio blocking thread only copies an 8-byte pointer — moving
+    /// the full struct through there overflows even with a generous
+    /// stack on this side.
+    pub async fn load_async() -> Result<Box<Self>> {
+        let (tx, rx) = mpsc::channel::<Result<Box<Self>>>();
         std::thread::Builder::new()
             .name("hearth-sc-loader".into())
             .stack_size(LOADER_STACK_SIZE)
             .spawn(move || {
-                let _ = tx.send(Self::load_inner());
+                let result = Self::load_inner().map(Box::new);
+                let _ = tx.send(result);
             })
             .context("spawning sc-loader thread")?;
-        // Block the current task on the channel via spawn_blocking. The
-        // tokio worker stays free; only the (small-stack) spawn_blocking
-        // thread parks on recv().
-        tokio::task::spawn_blocking(move || {
-            rx.recv()
-                .map_err(|_| anyhow::anyhow!("sc-loader sender dropped"))?
-        })
-        .await
-        .context("joining sc-loader bridge task")?
+        tokio::task::spawn_blocking(move || rx.recv())
+            .await
+            .context("joining sc-loader bridge task")?
+            .map_err(|_| anyhow::anyhow!("sc-loader sender dropped"))?
     }
 
-    fn load_inner() -> Result<Self> {
+    pub fn load_inner() -> Result<Self> {
         let installs = sc_installs::discover().context("sc_installs::discover")?;
         let install = installs
             .into_iter()
