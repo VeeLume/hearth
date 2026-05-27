@@ -42,13 +42,32 @@ hearth-core = { path = "crates/hearth-core" }
 hearth-export = { path = "crates/hearth-export" }
 hearth-storage = { path = "crates/hearth-storage" }
 
-# Profile overrides mirror sc-langpatch's: the generated sc-extract record_store
-# is a giant match statement; without opt-level=1 the dev-build Datacore parsing
-# takes minutes.
-[profile.dev.package.sc-extract-generated]
-opt-level = 1
+# ── Dev-profile overrides for SC parsing speed ──────────────────────────
+#
+# In a normal debug build, parsing Game2.dcb takes minutes and the
+# edit→reload loop is unusable. These overrides optimize *only* the
+# third-party SC / p4k / svarog crates while keeping our own code at
+# opt-level=0 (fast compile, full debug info).
+#
+# Pattern: bulkhead aggressively bumps the heavy bytes-in-bytes-out
+# crates to opt-level=3; sc-langpatch independently observed that
+# `sc-extract-generated` (the giant generated match statement over
+# every DCB record type) doesn't actually benefit beyond opt-level=1
+# and that higher levels just make LLVM run forever on those matches.
+# Combining both: opt-level=3 for the parsing/IO crates, opt-level=1
+# for the generated match crate.
 
+[profile.dev.package.svarog-p4k]
+opt-level = 3
 [profile.dev.package.svarog-datacore]
+opt-level = 3
+[profile.dev.package.sc-extract]
+opt-level = 3
+[profile.dev.package.sc-contracts]
+opt-level = 3
+
+# Generated giant-match crate — keep at 1 per sc-langpatch's note.
+[profile.dev.package.sc-extract-generated]
 opt-level = 1
 
 [profile.release]
