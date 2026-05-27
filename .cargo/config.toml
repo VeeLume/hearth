@@ -1,0 +1,10 @@
+# Windows secondary-thread stacks default to 1 MiB, which is too small
+# for sc-extract-generated's record_store match statements (and similar
+# deep code in the SC parsing pipeline). Bump to 8 MiB at link time so
+# every CreateThread (and therefore every tokio worker / blocking
+# thread) inherits the larger stack.
+#
+# Linux / macOS use the linker's default (typically 8 MiB on Linux,
+# unlimited on macOS) — no override needed there.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
