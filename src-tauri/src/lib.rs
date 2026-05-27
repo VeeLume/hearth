@@ -1,16 +1,16 @@
 //! Tauri shell for Hearth.
 //!
-//! Stage 2 (current): real SC data loading via sc_installs + sc-extract,
-//!   cached on `AppState` so the first BP catalog call pays the heavy
-//!   Datacore parse cost (~10s) once. Subsequent calls return instantly
-//!   from the cached `LoadedScData`.
+//! Initialization shape mirrors sc-langpatch's: synchronous `.manage()`
+//! call on a fully-built `AppState`, no async work inside `.setup()`.
+//! The DB pool open is bridged through a dedicated thread because sqlx
+//! is tokio-native and Tauri's runtime hasn't started yet when we're
+//! constructing state.
 
 use std::path::PathBuf;
 
 use hearth_core::{BpView, OwnedBlueprint, WishlistEntry};
 use hearth_storage::DbPool;
 use specta_typescript::Typescript;
-use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
 use tokio::sync::Mutex;
 
@@ -26,8 +26,7 @@ use sc_loader::LoadedScData;
 struct AppState {
     db: DbPool,
     /// Cached SC reference data. `None` until the first BP-catalog call
-    /// completes; subsequent calls reuse it. tokio Mutex so the lock
-    /// can be held across the blocking-thread spawn.
+    /// completes; subsequent calls reuse it.
     sc_data: Mutex<Option<LoadedScData>>,
 }
 
@@ -36,6 +35,33 @@ fn db_path() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("hearth").join("hearth.db"))
         .expect("OS data dir not resolvable")
+}
+
+/// Open the SQLite pool synchronously before Tauri's runtime starts.
+///
+/// Runs the async sqlx setup on a dedicated `std::thread` with its own
+/// current-thread tokio runtime. The thread gets an 8 MiB stack — sqlx
+/// itself doesn't need that much, but every tokio-using thread on
+/// Windows wants the headroom and giving it here costs nothing.
+fn init_db_pool() -> anyhow::Result<DbPool> {
+    std::thread::Builder::new()
+        .name("hearth-db-init".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| -> anyhow::Result<DbPool> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(hearth_storage::open(&db_path()))
+        })?
+        .join()
+        .map_err(|panic| {
+            let msg = panic
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("(no message)");
+            anyhow::anyhow!("db-init thread panicked: {msg}")
+        })?
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -48,11 +74,8 @@ async fn list_blueprints(
     let mut guard = state.sc_data.lock().await;
 
     if guard.is_none() {
-        // Heavy: Datacore parse + LocaleMap build. Run on the blocking
-        // thread pool so the Tauri runtime thread stays responsive.
-        let loaded = tauri::async_runtime::spawn_blocking(LoadedScData::load_blocking)
+        let loaded = LoadedScData::load_async()
             .await
-            .map_err(|e| AppError::Internal(format!("sc_loader task join: {e}")))?
             .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
         *guard = Some(loaded);
     }
@@ -129,6 +152,17 @@ async fn remove_from_wishlist(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Open the SQLite pool synchronously BEFORE Tauri starts its runtime.
+    // This avoids the race where the frontend would invoke a command
+    // before state is managed, and keeps the heavy initialization off
+    // Tauri's small-stack worker threads.
+    let db = init_db_pool().expect("opening hearth.db");
+
+    let state = AppState {
+        db,
+        sc_data: Mutex::new(None),
+    };
+
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         list_blueprints,
         list_owned,
@@ -139,30 +173,13 @@ pub fn run() {
         remove_from_wishlist,
     ]);
 
-    // Export TypeScript bindings in debug builds. Release builds use the
-    // committed src/lib/bindings.ts as-is.
     #[cfg(debug_assertions)]
     builder
         .export(Typescript::default(), "../src/lib/bindings.ts")
         .expect("exporting TypeScript bindings");
 
     tauri::Builder::default()
-        .setup(|app| {
-            // Open the SQLite pool *synchronously* via block_on so the
-            // AppState is guaranteed attached before the window renders
-            // and the frontend can issue commands. Doing this async
-            // creates a race where early commands run before state is
-            // managed, which Tauri handles by failing the State<T>
-            // extractor with unpredictable downstream effects.
-            let path = db_path();
-            let pool = tauri::async_runtime::block_on(hearth_storage::open(&path))
-                .expect("opening hearth.db");
-            app.manage(AppState {
-                db: pool,
-                sc_data: Mutex::new(None),
-            });
-            Ok(())
-        })
+        .manage(state)
         .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("running tauri application");

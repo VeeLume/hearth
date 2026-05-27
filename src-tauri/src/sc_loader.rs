@@ -13,30 +13,35 @@
 //!   → BlueprintPoolRegistry::build(&datacore)
 //! ```
 //!
-//! `LoadedScData::load_blocking` is sync + slow (~10s+ on first run,
-//! Datacore parse is dominated by `record_store` codegen). Always call
-//! via `tauri::async_runtime::spawn_blocking` so the Tauri runtime
-//! thread stays responsive.
+//! # Stack-size workaround
+//!
+//! sc-extract-generated's `record_store` decoder has match arms deep
+//! enough to overflow the default thread stack on Windows (~1 MiB for
+//! secondary threads, ~2 MiB for tokio workers by default — neither is
+//! enough). Pattern lifted from sc-langpatch's `preview::load_on_big_stack`
+//! and bulkhead's `data::LOADER_STACK_SIZE`: spin up a dedicated
+//! `std::thread` with an explicit 16 MiB stack, run the load to
+//! completion, and `join()` the result back.
+
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hearth_core::BpView;
 use sc_contracts::BlueprintPoolRegistry;
 use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, LocaleMap};
 
+/// 16 MiB — matches the upper end of what bulkhead uses (32 MiB) but
+/// chosen lower since Hearth only parses Datacore + Blueprints, not
+/// the larger snapshot machinery bulkhead drives.
+pub const LOADER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// SC reference data + the LocaleMap needed to resolve display names.
 /// Held on `AppState` behind a tokio Mutex so the heavy parse runs at
 /// most once per app session.
-///
-/// **All heavy work happens inside `load_blocking`** — the BP catalog is
-/// pre-built there so subsequent `blueprints()` calls are just slice
-/// access. This matters because `BlueprintPoolRegistry::build` pulls in
-/// sc-extract-generated's giant match statements, which overflow the
-/// async worker's 2 MiB stack if run there. Blocking threads (where
-/// `load_blocking` runs) get the OS default stack, large enough.
 pub struct LoadedScData {
     /// Channel name (e.g. "LIVE") for the install we loaded from.
     pub channel: String,
-    /// Pre-computed BP catalog. Built once at load time on the blocking
+    /// Pre-computed BP catalog. Built once at load time on the loader
     /// thread; returned by reference on every later call.
     blueprints: Vec<BpView>,
     /// Held for future stage work (mission lookup, name resolution of
@@ -48,9 +53,51 @@ pub struct LoadedScData {
 }
 
 impl LoadedScData {
-    /// Discover the first available SC install and load its reference
-    /// data. Blocking — call via `spawn_blocking`.
-    pub fn load_blocking() -> Result<Self> {
+    /// Spawn a dedicated 16 MiB-stack thread, run the load on it, and
+    /// return the result. Synchronous from the caller's perspective —
+    /// joins the thread before returning. See module docstring for why
+    /// we need the bigger stack.
+    pub fn load_on_big_stack() -> Result<Self> {
+        std::thread::Builder::new()
+            .name("hearth-sc-loader".into())
+            .stack_size(LOADER_STACK_SIZE)
+            .spawn(Self::load_inner)
+            .context("spawning sc-loader thread")?
+            .join()
+            .map_err(|panic| {
+                let msg = panic
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("(no message)");
+                anyhow::anyhow!("sc-loader thread panicked: {msg}")
+            })?
+    }
+
+    /// Bridge to async: spawn the loader on its own thread, wait for the
+    /// result via a oneshot channel. Holds none of tokio's blocking-pool
+    /// threads — those don't have a large enough stack on Windows.
+    pub async fn load_async() -> Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("hearth-sc-loader".into())
+            .stack_size(LOADER_STACK_SIZE)
+            .spawn(move || {
+                let _ = tx.send(Self::load_inner());
+            })
+            .context("spawning sc-loader thread")?;
+        // Block the current task on the channel via spawn_blocking. The
+        // tokio worker stays free; only the (small-stack) spawn_blocking
+        // thread parks on recv().
+        tokio::task::spawn_blocking(move || {
+            rx.recv()
+                .map_err(|_| anyhow::anyhow!("sc-loader sender dropped"))?
+        })
+        .await
+        .context("joining sc-loader bridge task")?
+    }
+
+    fn load_inner() -> Result<Self> {
         let installs = sc_installs::discover().context("sc_installs::discover")?;
         let install = installs
             .into_iter()
@@ -61,26 +108,19 @@ impl LoadedScData {
         let assets = AssetSource::open(&p4k_path)
             .with_context(|| format!("opening Data.p4k for channel {channel}"))?;
 
-        // Build LocaleMap from the english global.ini in the p4k.
         let ini_bytes = assets
             .read("Data/Localization/english/global.ini")
             .context("reading global.ini from p4k")?;
         let locale = build_locale_map(&ini_bytes)?;
 
-        // Datacore parse — the slow step. `AssetConfig::minimal()` skips
-        // the parse-time LocaleMap build. `DatacoreConfig::standard()`
-        // builds LocalizedItemCache which BlueprintItem::display_name needs.
         tracing::info!("extracting AssetData");
         let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
             .context("AssetData::extract")?;
         tracing::info!("parsing Datacore");
         let datacore = Datacore::parse(&assets, &asset_data, &DatacoreConfig::standard())
             .context("Datacore::parse")?;
-        drop(assets); // release file handles before doing anything else.
+        drop(assets);
 
-        // Pre-build the BP catalog on this (blocking) thread so the
-        // command path never has to touch the registry on the async
-        // worker (see struct docstring).
         tracing::info!("building blueprint catalog");
         let blueprints = build_blueprints(&datacore, &locale);
         tracing::info!(count = blueprints.len(), "blueprint catalog ready");
@@ -114,11 +154,6 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     out
 }
 
-/// Parse global.ini bytes (UTF-16 LE with BOM) into a LocaleMap.
-///
-/// Locale-metadata suffixes (e.g. trailing `,P` on variant keys) are
-/// stripped via `sc_extract::strip_locale_metadata` so the resulting
-/// map keys match the DCB-reference form.
 fn build_locale_map(bytes: &[u8]) -> Result<LocaleMap> {
     let (decoded, _, had_errors) = encoding_rs::UTF_16LE.decode(bytes);
     if had_errors {

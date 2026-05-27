@@ -20,9 +20,8 @@ vite.config.ts.timestamp-*
 .DS_Store
 Thumbs.db
 
-# Local cargo path overrides (e.g. local [patch] entries). The committed
-# .cargo/config.toml is for project-wide linker flags and stays tracked.
-.cargo/config.toml.local
+# Local cargo path overrides (dev only)
+.cargo/
 src-tauri/.cargo/
 
 # Claude Code memory (local-only)
