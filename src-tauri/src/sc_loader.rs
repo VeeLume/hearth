@@ -26,12 +26,25 @@ use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, 
 /// SC reference data + the LocaleMap needed to resolve display names.
 /// Held on `AppState` behind a tokio Mutex so the heavy parse runs at
 /// most once per app session.
+///
+/// **All heavy work happens inside `load_blocking`** — the BP catalog is
+/// pre-built there so subsequent `blueprints()` calls are just slice
+/// access. This matters because `BlueprintPoolRegistry::build` pulls in
+/// sc-extract-generated's giant match statements, which overflow the
+/// async worker's 2 MiB stack if run there. Blocking threads (where
+/// `load_blocking` runs) get the OS default stack, large enough.
 pub struct LoadedScData {
-    datacore: Datacore,
-    locale: LocaleMap,
     /// Channel name (e.g. "LIVE") for the install we loaded from.
-    /// Useful for surfacing in the UI later.
     pub channel: String,
+    /// Pre-computed BP catalog. Built once at load time on the blocking
+    /// thread; returned by reference on every later call.
+    blueprints: Vec<BpView>,
+    /// Held for future stage work (mission lookup, name resolution of
+    /// freshly-fetched records); not used during catalog access.
+    #[allow(dead_code)]
+    datacore: Datacore,
+    #[allow(dead_code)]
+    locale: LocaleMap,
 }
 
 impl LoadedScData {
@@ -55,10 +68,8 @@ impl LoadedScData {
         let locale = build_locale_map(&ini_bytes)?;
 
         // Datacore parse — the slow step. `AssetConfig::minimal()` skips
-        // the parse-time LocaleMap build (post v0.3.0 holotable
-        // restructure, Datacore::parse no longer consumes that anyway).
-        // `DatacoreConfig::standard()` builds LocalizedItemCache which
-        // BlueprintItem::display_name needs.
+        // the parse-time LocaleMap build. `DatacoreConfig::standard()`
+        // builds LocalizedItemCache which BlueprintItem::display_name needs.
         tracing::info!("extracting AssetData");
         let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
             .context("AssetData::extract")?;
@@ -67,31 +78,40 @@ impl LoadedScData {
             .context("Datacore::parse")?;
         drop(assets); // release file handles before doing anything else.
 
+        // Pre-build the BP catalog on this (blocking) thread so the
+        // command path never has to touch the registry on the async
+        // worker (see struct docstring).
+        tracing::info!("building blueprint catalog");
+        let blueprints = build_blueprints(&datacore, &locale);
+        tracing::info!(count = blueprints.len(), "blueprint catalog ready");
+
         Ok(Self {
+            channel,
+            blueprints,
             datacore,
             locale,
-            channel,
         })
     }
 
-    /// Build the full BP catalog: every pool's every item, resolved
-    /// to `BpView` shape with display name from LocaleMap when possible.
+    /// Cheap slice-clone of the pre-built BP catalog.
     pub fn blueprints(&self) -> Vec<BpView> {
-        let registry = BlueprintPoolRegistry::build(&self.datacore);
-        let cache = &self.datacore.snapshot().localized_items;
-
-        let mut out = Vec::new();
-        for pool in registry.iter() {
-            for item in &pool.items {
-                let mut view = hearth_core::sc_data::bp_view(item, pool);
-                view.display_name = item
-                    .display_name(cache, &self.locale)
-                    .map(|s| s.to_owned());
-                out.push(view);
-            }
-        }
-        out
+        self.blueprints.clone()
     }
+}
+
+fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
+    let registry = BlueprintPoolRegistry::build(datacore);
+    let cache = &datacore.snapshot().localized_items;
+
+    let mut out = Vec::new();
+    for pool in registry.iter() {
+        for item in &pool.items {
+            let mut view = hearth_core::sc_data::bp_view(item, pool);
+            view.display_name = item.display_name(cache, locale).map(|s| s.to_owned());
+            out.push(view);
+        }
+    }
+    out
 }
 
 /// Parse global.ini bytes (UTF-16 LE with BOM) into a LocaleMap.

@@ -148,19 +148,18 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            // Open the SQLite pool asynchronously, then attach to managed
-            // state. Failure here is fatal — without storage the app can't
-            // do anything useful.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let path = db_path();
-                let pool = hearth_storage::open(&path)
-                    .await
-                    .expect("opening hearth.db");
-                handle.manage(AppState {
-                    db: pool,
-                    sc_data: Mutex::new(None),
-                });
+            // Open the SQLite pool *synchronously* via block_on so the
+            // AppState is guaranteed attached before the window renders
+            // and the frontend can issue commands. Doing this async
+            // creates a race where early commands run before state is
+            // managed, which Tauri handles by failing the State<T>
+            // extractor with unpredictable downstream effects.
+            let path = db_path();
+            let pool = tauri::async_runtime::block_on(hearth_storage::open(&path))
+                .expect("opening hearth.db");
+            app.manage(AppState {
+                db: pool,
+                sc_data: Mutex::new(None),
             });
             Ok(())
         })
