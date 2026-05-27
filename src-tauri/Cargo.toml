@@ -1,0 +1,33 @@
+[package]
+name = "hearth"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Hearth — Star Citizen blueprint / crafting / mission tracker (desktop shell)"
+default-run = "hearth"
+
+[lib]
+name = "hearth_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+# Internal crates — wiring placeholders, used from Stage 1 onwards.
+hearth-core.workspace = true
+hearth-storage.workspace = true
+hearth-export.workspace = true
+
+# SC data — consumed via hearth-core::sc_data adapter (Stage 1).
+sc-installs.workspace = true
+sc-extract.workspace = true
+sc-contracts.workspace = true

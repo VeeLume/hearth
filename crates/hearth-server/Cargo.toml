@@ -1,0 +1,16 @@
+[package]
+name = "hearth-server"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Hearth server (axum + sqlx + Discord OAuth). Empty stub in v1; comes alive in v2."
+
+[[bin]]
+name = "hearth-server"
+path = "src/main.rs"
+
+[dependencies]
+hearth-core.workspace = true
+hearth-storage.workspace = true

@@ -1,0 +1,28 @@
+# Rust
+/target/
+
+# Node / Svelte
+node_modules/
+/build/
+/.svelte-kit/
+/package/
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local cargo path overrides (dev only)
+.cargo/
+src-tauri/.cargo/
+
+# Claude Code memory (local-only)
+.claude/

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/hearth-core",
+    "crates/hearth-export",
+    "crates/hearth-storage",
+    "crates/hearth-server",
+]
+
+[workspace.package]
+version = "0.0.1"
+authors = ["Valerie"]
+license = "MIT"
+edition = "2024"
+repository = "https://github.com/VeeLume/hearth"
+
+[workspace.dependencies]
+# Generic
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# sc-holotable family (pin matches sc-langpatch v0.5.0 so cross-repo work shares the same SC data shapes)
+sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0", features = ["contracts", "servicebeacon", "entities"] }
+sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
+
+# Internal crates
+hearth-core = { path = "crates/hearth-core" }
+hearth-export = { path = "crates/hearth-export" }
+hearth-storage = { path = "crates/hearth-storage" }
+
+# Profile overrides mirror sc-langpatch's: the generated sc-extract record_store
+# is a giant match statement; without opt-level=1 the dev-build Datacore parsing
+# takes minutes.
+[profile.dev.package.sc-extract-generated]
+opt-level = 1
+
+[profile.dev.package.svarog-datacore]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release.package.sc-extract-generated]
+opt-level = 1

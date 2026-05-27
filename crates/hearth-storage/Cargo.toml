@@ -1,0 +1,17 @@
+[package]
+name = "hearth-storage"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "SQLite storage layer for Hearth. Used by desktop (cache + outbox) and server (canonical state)."
+
+[dependencies]
+hearth-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "chrono", "macros", "migrate"] }

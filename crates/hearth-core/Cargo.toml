@@ -1,0 +1,15 @@
+[package]
+name = "hearth-core"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Domain types and logic for Hearth. Pure — no transport, no storage."
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sc-contracts.workspace = true
+sc-extract.workspace = true
