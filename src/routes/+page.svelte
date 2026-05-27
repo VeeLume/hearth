@@ -102,7 +102,7 @@
           <span class="pool-count">{items.length}</span>
         </summary>
         <ul>
-          {#each items as bp (bp.blueprint_record_guid)}
+          {#each items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
             <li>
               <span class="bp-name">
                 {bp.display_name ?? bp.blueprint_record_guid}
