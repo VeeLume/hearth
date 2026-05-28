@@ -283,7 +283,7 @@
         <div class="wish-section">
           <div class="wish-section-head">
             <span class="wish-section-icon want">⚑</span>
-            <h2>Blueprints I want</h2>
+            <h2>Wanted Blueprints</h2>
             <span class="wish-section-count">{recipeWishes.length}</span>
           </div>
           <p class="wish-section-sub">
@@ -312,7 +312,7 @@
         <div class="wish-section">
           <div class="wish-section-head">
             <span class="wish-section-icon want">♥</span>
-            <h2>Items I want</h2>
+            <h2>Wanted Items</h2>
             <span class="wish-section-count">{itemWishes.length}</span>
           </div>
           <p class="wish-section-sub">
