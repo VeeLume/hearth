@@ -209,8 +209,8 @@
         </div>
         <div class="legend">
           <span class="legend-item"><span class="legend-icon own">✓</span> own BP</span>
-          <span class="legend-item"><span class="legend-icon">📘</span> want BP</span>
-          <span class="legend-item"><span class="legend-icon item">★</span> want item</span>
+          <span class="legend-item"><span class="legend-icon want">⚑</span> want BP</span>
+          <span class="legend-item"><span class="legend-icon want">♥</span> want item</span>
         </div>
       </div>
 
@@ -248,7 +248,7 @@
                           : "Want this blueprint (recipe)"}
                         onclick={() => (bp.wantRecipe = !bp.wantRecipe)}
                       >
-                        📘
+                        {bp.wantRecipe ? "⚑" : "⚐"}
                       </button>
                     {:else}
                       <span class="wish placeholder-slot" title="Blueprint owned"
@@ -265,7 +265,7 @@
                         : "Want a crafted copy of the item"}
                       onclick={() => (bp.wantItem = !bp.wantItem)}
                     >
-                      ★
+                      {bp.wantItem ? "♥" : "♡"}
                     </button>
                   </div>
                 </li>
@@ -282,7 +282,7 @@
         <!-- Two intents, two sections, one underlying BP↔item identity. -->
         <div class="wish-section">
           <div class="wish-section-head">
-            <span class="wish-section-icon">📘</span>
+            <span class="wish-section-icon want">⚑</span>
             <h2>Blueprints I want</h2>
             <span class="wish-section-count">{recipeWishes.length}</span>
           </div>
@@ -301,7 +301,7 @@
                   <button
                     class="wish recipe on"
                     title="Remove blueprint wish"
-                    onclick={() => (bp.wantRecipe = false)}>📘</button
+                    onclick={() => (bp.wantRecipe = false)}>⚑</button
                   >
                 </li>
               {/each}
@@ -311,7 +311,7 @@
 
         <div class="wish-section">
           <div class="wish-section-head">
-            <span class="wish-section-icon">★</span>
+            <span class="wish-section-icon want">♥</span>
             <h2>Items I want</h2>
             <span class="wish-section-count">{itemWishes.length}</span>
           </div>
@@ -335,7 +335,7 @@
                   <button
                     class="wish item on"
                     title="Remove item wish"
-                    onclick={() => (bp.wantItem = false)}>★</button
+                    onclick={() => (bp.wantItem = false)}>♥</button
                   >
                 </li>
               {/each}
@@ -608,12 +608,12 @@
     gap: 0.3rem;
   }
   .legend-icon {
-    font-size: 0.8rem;
+    font-size: 0.85rem;
   }
   .legend-icon.own {
     color: var(--ember);
   }
-  .legend-icon.item {
+  .legend-icon.want {
     color: var(--ember);
   }
   .chip {
@@ -737,36 +737,31 @@
     border: none;
     cursor: pointer;
     color: var(--faint);
-    font-size: 0.95rem;
+    font-size: 1.05rem;
     line-height: 1;
     padding: 0.25rem 0.3rem;
     border-radius: 6px;
-    filter: grayscale(1) opacity(0.55);
-    transition: filter 90ms, transform 90ms, background 90ms;
+    transition: color 90ms, transform 90ms, background 90ms;
   }
   .wish:hover {
-    transform: scale(1.12);
-    filter: grayscale(0.4) opacity(0.9);
+    transform: scale(1.15);
+    color: var(--muted);
     background: var(--panel-2);
   }
+  /* both intents glow ember when active (shared outline→fill language) */
   .wish.on {
-    filter: none;
-  }
-  /* item-wish uses the ember star when active */
-  .wish.item.on {
     color: var(--ember);
-    filter: none;
   }
   .wish.placeholder-slot {
     color: var(--faint);
     opacity: 0.3;
     cursor: default;
-    filter: none;
     padding: 0.25rem 0.3rem;
   }
   .wish.placeholder-slot:hover {
     transform: none;
     background: transparent;
+    color: var(--faint);
   }
   .empty {
     color: var(--muted);
@@ -789,6 +784,7 @@
   }
   .wish-section-icon {
     font-size: 1.1rem;
+    color: var(--ember);
   }
   .wish-section-head h2 {
     margin: 0;
