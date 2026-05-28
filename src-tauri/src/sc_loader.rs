@@ -161,6 +161,10 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
         for item in &pool.items {
             let mut view = hearth_core::sc_data::bp_view(item, pool);
             view.display_name = item.display_name(cache, locale).map(|s| s.to_owned());
+            if let Some(entity_guid) = item.crafted_entity_guid {
+                view.item_type = cache.item_type(&entity_guid).map(str::to_owned);
+                view.item_sub_type = cache.item_sub_type(&entity_guid).map(str::to_owned);
+            }
             out.push(view);
         }
     }

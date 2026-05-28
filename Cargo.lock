@@ -3524,7 +3524,7 @@ dependencies = [
 [[package]]
 name = "sc-contracts"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.6.0#e051ef736470b4b8bc0d7f107d41a3654ca350ce"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
 dependencies = [
  "sc-extract",
  "svarog-common",
@@ -3535,7 +3535,7 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.6.0#e051ef736470b4b8bc0d7f107d41a3654ca350ce"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3555,7 +3555,7 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.6.0#e051ef736470b4b8bc0d7f107d41a3654ca350ce"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
 dependencies = [
  "svarog-common",
  "svarog-datacore",
@@ -3564,7 +3564,7 @@ dependencies = [
 [[package]]
 name = "sc-installs"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.6.0#e051ef736470b4b8bc0d7f107d41a3654ca350ce"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
 dependencies = [
  "aes",
  "cbc",

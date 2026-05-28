@@ -28,6 +28,10 @@ pub fn bp_view(item: &BlueprintItem, pool: &BlueprintPool) -> BpView {
         blueprint_record_guid: guid_string(&item.blueprint_record_guid),
         crafted_entity_guid: item.crafted_entity_guid.as_ref().map(guid_string),
         display_name: None,
+        // Filled by the loader (needs the LocalizedItemCache), same as
+        // display_name. None here keeps this adapter pure.
+        item_type: None,
+        item_sub_type: None,
         weight: item.weight,
     }
 }

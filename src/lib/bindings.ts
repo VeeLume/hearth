@@ -181,7 +181,19 @@ export type BpView = { pool_guid: string; pool_name: string; blueprint_record_gu
  * Resolved display name. `None` when LocaleMap doesn't resolve;
  * UI should fall back to the GUID.
  */
-display_name: string | null; weight: number }
+display_name: string | null; 
+/**
+ * Raw CIG item-type classification of the crafted entity
+ * (`AttachDef.Type`), e.g. `"Char_Armor_Helmet"`, `"WeaponPersonal"`.
+ * `None` when the crafted entity didn't resolve or carried no type.
+ * The UI maps these raw strings into friendly catalog categories.
+ */
+item_type: string | null; 
+/**
+ * Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
+ * Available for finer sub-grouping; not all items set it.
+ */
+item_sub_type: string | null; weight: number }
 /**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be

@@ -24,7 +24,7 @@ Currently in **v1** (personal desktop tool). v1 ships with no backend, no auth, 
 
 ## Cross-repo deps
 
-- `sc-holotable` (sc-contracts, sc-installs, sc-extract, sc-weapons) — pinned to tag `sc-holotable/v0.5.0` in workspace Cargo.toml. Bump deliberately when SC data needs change.
+- `sc-holotable` (sc-contracts, sc-installs, sc-extract, sc-weapons) — pinned to tag `sc-holotable/v0.7.0` in workspace Cargo.toml. Bump deliberately when SC data needs change. For cross-repo iteration, add a local `[patch."https://github.com/VeeLume/sc-holotable.git"]` pointing at `../sc-holotable/crates/*`, then remove it once the new tag is pushed and the pin is bumped.
 - `sc-langpatch` consumes `hearth-export` (path dep when developed in parallel).
 
 ## Things not to do

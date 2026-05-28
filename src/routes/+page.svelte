@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, type BpView } from "$lib/bindings";
+  import { categoryFor } from "$lib/itemTypes";
 
   let blueprints = $state<BpView[]>([]);
   let owned = $state<Set<string>>(new Set());
@@ -59,29 +60,61 @@
       if (q) {
         const name = bp.display_name?.toLowerCase() ?? "";
         const guid = bp.blueprint_record_guid.toLowerCase();
-        const pool = bp.pool_name.toLowerCase();
-        if (!(name.includes(q) || guid.includes(q) || pool.includes(q)))
+        const cat = categoryFor(bp.item_type);
+        const catText = `${cat.main} ${cat.sub}`.toLowerCase();
+        if (!(name.includes(q) || guid.includes(q) || catText.includes(q)))
           return false;
       }
       return true;
     });
   });
 
-  const grouped = $derived.by(() => {
-    const map = new Map<string, BpView[]>();
+  // Two-level grouping by friendly item-type taxonomy (not blueprint
+  // reward pool — pools are a mission-reward mechanic). categoryFor maps
+  // the raw BpView.item_type into a main + sub category.
+  type SubGroup = { sub: string; subOrder: number; items: BpView[] };
+  type MainGroup = {
+    main: string;
+    mainOrder: number;
+    total: number;
+    subs: SubGroup[];
+  };
+
+  const grouped = $derived.by((): MainGroup[] => {
+    const mains = new Map<string, MainGroup & { subMap: Map<string, SubGroup> }>();
     for (const bp of filtered) {
-      const list = map.get(bp.pool_name) ?? [];
-      list.push(bp);
-      map.set(bp.pool_name, list);
+      const cat = categoryFor(bp.item_type);
+      let main = mains.get(cat.main);
+      if (!main) {
+        main = {
+          main: cat.main,
+          mainOrder: cat.mainOrder,
+          total: 0,
+          subs: [],
+          subMap: new Map(),
+        };
+        mains.set(cat.main, main);
+      }
+      let sub = main.subMap.get(cat.sub);
+      if (!sub) {
+        sub = { sub: cat.sub, subOrder: cat.subOrder, items: [] };
+        main.subMap.set(cat.sub, sub);
+        main.subs.push(sub);
+      }
+      sub.items.push(bp);
+      main.total += 1;
     }
-    for (const list of map.values()) {
-      list.sort((a, b) =>
-        (a.display_name ?? a.blueprint_record_guid).localeCompare(
-          b.display_name ?? b.blueprint_record_guid,
-        ),
+    const byName = (a: BpView, b: BpView) =>
+      (a.display_name ?? a.blueprint_record_guid).localeCompare(
+        b.display_name ?? b.blueprint_record_guid,
       );
+    const out = [...mains.values()];
+    for (const m of out) {
+      for (const s of m.subs) s.items.sort(byName);
+      m.subs.sort((a, b) => a.subOrder - b.subOrder || a.sub.localeCompare(b.sub));
     }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+    out.sort((a, b) => a.mainOrder - b.mainOrder || a.main.localeCompare(b.main));
+    return out;
   });
 
   const filters: { id: Filter; label: string }[] = [
@@ -101,7 +134,7 @@
   <input
     class="search"
     type="search"
-    placeholder="Search name, pool, or GUID…"
+    placeholder="Search name, type, or GUID…"
     bind:value={query}
     disabled={loading}
   />
@@ -140,41 +173,49 @@
   </div>
 
   <section class="catalog">
-    {#each grouped as [pool, items] (pool)}
-      <div class="pool">
-        <div class="pool-head">
-          <span class="pool-name">{pool || "(unnamed pool)"}</span>
-          <span class="pool-count">{items.length}</span>
+    {#each grouped as mainGroup (mainGroup.main)}
+      <div class="maincat">
+        <div class="maincat-head">
+          <h2>{mainGroup.main}</h2>
+          <span class="maincat-count">{mainGroup.total}</span>
         </div>
-        <ul>
-          {#each items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
-            {@const isOwned = owned.has(bp.blueprint_record_guid)}
-            <li class:owned={isOwned}>
-              <button
-                class="own-toggle"
-                class:on={isOwned}
-                title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
-                onclick={() => toggleOwned(bp.blueprint_record_guid)}
-              >
-                {isOwned ? "✓" : ""}
-              </button>
-              <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
-              {#if bp.display_name}
-                <span class="bp-guid">{bp.blueprint_record_guid}</span>
-              {/if}
+        {#each mainGroup.subs as subGroup (subGroup.sub)}
+          <div class="pool">
+            <div class="pool-head">
+              <span class="pool-name">{subGroup.sub}</span>
+              <span class="pool-count">{subGroup.items.length}</span>
+            </div>
+            <ul>
+              {#each subGroup.items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
+                {@const isOwned = owned.has(bp.blueprint_record_guid)}
+                <li class:owned={isOwned}>
+                  <button
+                    class="own-toggle"
+                    class:on={isOwned}
+                    title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
+                    onclick={() => toggleOwned(bp.blueprint_record_guid)}
+                  >
+                    {isOwned ? "✓" : ""}
+                  </button>
+                  <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
+                  {#if bp.display_name}
+                    <span class="bp-guid">{bp.blueprint_record_guid}</span>
+                  {/if}
 
-              <!-- Wishlist intents — present but disabled until Stage 7. -->
-              <div class="wish-group">
-                {#if !isOwned}
-                  <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
-                {:else}
-                  <span class="wish placeholder-slot">·</span>
-                {/if}
-                <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
-              </div>
-            </li>
-          {/each}
-        </ul>
+                  <!-- Wishlist intents — present but disabled until Stage 7. -->
+                  <div class="wish-group">
+                    {#if !isOwned}
+                      <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                    {:else}
+                      <span class="wish placeholder-slot">·</span>
+                    {/if}
+                    <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/each}
       </div>
     {/each}
     {#if grouped.length === 0}
@@ -300,8 +341,35 @@
     overflow-y: auto;
     padding: 0 1.6rem 2rem;
   }
+  .maincat {
+    margin-bottom: 1.75rem;
+  }
+  .maincat-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.6rem 0.2rem 0.2rem;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  .maincat-head h2 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--ember);
+  }
+  .maincat-count {
+    font-size: 0.72rem;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
   .pool {
-    margin-bottom: 1.1rem;
+    margin-bottom: 0.5rem;
+    margin-left: 0.25rem;
   }
   .pool-head {
     display: flex;
@@ -309,7 +377,9 @@
     gap: 0.6rem;
     padding: 0.4rem 0.2rem;
     position: sticky;
-    top: 0;
+    /* stick below the main-category header (which is ~2.1rem tall) */
+    top: 2.1rem;
+    z-index: 1;
     background: var(--bg);
   }
   .pool-name {

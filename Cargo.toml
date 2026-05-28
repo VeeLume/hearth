@@ -39,10 +39,10 @@ specta-typescript = "0.0.9"
 tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 
 # sc-holotable family (pin matches sc-langpatch v0.5.0 so cross-repo work shares the same SC data shapes)
-sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0", features = ["contracts", "servicebeacon", "entities"] }
-sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
+sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0", features = ["contracts", "servicebeacon", "entities"] }
+sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
 
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }

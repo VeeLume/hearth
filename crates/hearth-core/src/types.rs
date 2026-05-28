@@ -173,5 +173,13 @@ pub struct BpView {
     /// Resolved display name. `None` when LocaleMap doesn't resolve;
     /// UI should fall back to the GUID.
     pub display_name: Option<String>,
+    /// Raw CIG item-type classification of the crafted entity
+    /// (`AttachDef.Type`), e.g. `"Char_Armor_Helmet"`, `"WeaponPersonal"`.
+    /// `None` when the crafted entity didn't resolve or carried no type.
+    /// The UI maps these raw strings into friendly catalog categories.
+    pub item_type: Option<String>,
+    /// Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
+    /// Available for finer sub-grouping; not all items set it.
+    pub item_sub_type: Option<String>,
     pub weight: f32,
 }
