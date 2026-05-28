@@ -20,6 +20,7 @@ Currently in **v1** (personal desktop tool). v1 ships with no backend, no auth, 
 - **`hearth-export` is serde-only.** No logic, no I/O — just schema types the langpatch consumer can depend on without pulling in the rest of Hearth.
 - **UUIDv7 / ULID for every record.** Sortable, no central authority needed, works offline. Mandatory from v1.
 - **Schema reserves an `outbox` table from v1.** Unused until v2's write-queue sync arrives.
+- **Pre-release migrations are edited in place.** `0001_initial.sql` is edited directly rather than adding new migration files until v1 ships. Consequence: an existing dev DB hits a sqlx migration-checksum mismatch and fails to open (which surfaces as a silent storage-init failure). **When you change the schema during dev, just delete the dev DB** (`%APPDATA%/hearth/hearth.db` on Windows) — sqlx recreates it on next launch. No renaming/backup ceremony; it's throwaway dev data pre-release.
 
 ## Cross-repo deps
 
