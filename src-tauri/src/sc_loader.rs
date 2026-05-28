@@ -38,8 +38,8 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 pub struct LoadedScData {
     /// Specific channel that produced this dataset (Live, Hotfix, …).
     pub channel: Channel,
-    /// Stability grouping. `Prod` (Live + Hotfix) or `Ptu` (PTU + EPTU
-    /// + TechPreview). Read from launcher store when available; falls
+    /// Stability grouping. `Prod` (Live + Hotfix) or `Ptu` (PTU, EPTU,
+    /// TechPreview). Read from launcher store when available; falls
     /// back to a channel-based map otherwise.
     pub platform: Platform,
     /// RSI handle from the launcher store, if available. `None` if the

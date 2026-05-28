@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishlistEntry};
 use hearth_storage::{DbPool, Scope};
-use specta_typescript::Typescript;
+use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri_specta::{Builder, collect_commands};
 use tokio::sync::{Mutex, OnceCell};
 
@@ -258,14 +258,12 @@ struct ActiveScope {
 
 // ── App setup ───────────────────────────────────────────────────────────────
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let state = AppState {
-        sc_data: Mutex::new(HashMap::new()),
-        db: OnceCell::new(),
-    };
-
-    let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
+/// Single source of truth for the IPC command list. Used both by
+/// `run()` at app startup and by the `export-bindings` binary so the
+/// TypeScript file can be regenerated without booting the full Tauri
+/// app (which would require loading SC data).
+pub fn ipc_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new().commands(collect_commands![
         list_blueprints,
         list_owned,
         add_owned,
@@ -276,11 +274,34 @@ pub fn run() {
         active_scope,
         list_accounts,
         verify_account,
-    ]);
+    ])
+}
+
+/// Write `src/lib/bindings.ts` from the current Rust command surface.
+/// Idempotent. Called from `run()` debug builds and from the
+/// `export-bindings` binary.
+pub fn export_bindings(out: &str) -> Result<(), specta_typescript::ExportError> {
+    ipc_builder().export(typescript_exporter(), out)
+}
+
+/// Shared TS exporter config. `BigInt → Number` is safe for our small
+/// i64 fields (citizen records ~7 digits, heapAccountId ~7 digits).
+fn typescript_exporter() -> Typescript {
+    Typescript::default().bigint(BigIntExportBehavior::Number)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let state = AppState {
+        sc_data: Mutex::new(HashMap::new()),
+        db: OnceCell::new(),
+    };
+
+    let builder = ipc_builder();
 
     #[cfg(debug_assertions)]
     builder
-        .export(Typescript::default(), "../src/lib/bindings.ts")
+        .export(typescript_exporter(), "../src/lib/bindings.ts")
         .expect("exporting TypeScript bindings");
 
     tauri::Builder::default()

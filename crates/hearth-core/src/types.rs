@@ -44,7 +44,10 @@ impl Platform {
     }
 
     /// Parse from the storage form ("prod" / "ptu") or from sc-installs'
-    /// `Installation::platform_id` value (same shape).
+    /// `Installation::platform_id` value (same shape). Inherent rather
+    /// than `FromStr` because we want `Option` (unknown variants are
+    /// soft failures), not `Result`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "prod" => Some(Self::Prod),

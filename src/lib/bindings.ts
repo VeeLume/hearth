@@ -62,13 +62,38 @@ async removeFromWishlist(blueprintGuid: string) : Promise<Result<boolean, AppErr
 }
 },
 /**
- * Surface the active channel + group + account to the UI so it can
- * show "PU (LIVE)" or "Test (PTU)" badges and (eventually) drive a
- * channel switcher.
+ * Surface the active platform + channel + account so the UI can show
+ * "PU · LIVE · @VeeLume" or similar. Triggers the bootstrap if needed
+ * (loads SC data + inserts the account row if missing).
  */
 async activeScope() : Promise<Result<ActiveScope, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("active_scope") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List every RSI account this desktop has known. Stage 3 wires this
+ * to a picker; Stage 2.5 just exposes the data.
+ */
+async listAccounts() : Promise<Result<Account[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_accounts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Scrape `/citizens/<handle>` for the given account and write the
+ * immutable anchors (`citizen_record`, `enlisted`) back to the row.
+ * Refreshes `last_verified`. Returns the up-to-date `Account`.
+ */
+async verifyAccount(accountId: RecordId) : Promise<Result<Account, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("verify_account", { accountId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -86,8 +111,52 @@ async activeScope() : Promise<Result<ActiveScope, AppError>> {
 
 /** user-defined types **/
 
-export type ActiveScope = { channel: string; channel_group: ChannelGroup; account_id: string }
-export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Internal"; message: string }
+/**
+ * An RSI account this desktop has seen. One row per distinct account
+ * (multi-account on the same desktop = multiple rows). Personal-state
+ * tables FK back to this via `account_id`.
+ * 
+ * `handle` is the current display name; `citizen_record` + `enlisted`
+ * are the truly-immutable public anchors scraped from
+ * `/citizens/<handle>` once the user explicitly verifies. They stay
+ * `None` for the no-sign-in default flow where Hearth just trusts the
+ * launcher store's nickname.
+ * 
+ * `account_hint` (optional) stores the launcher's `heapAccountId` /
+ * in-log `accountId` value. Use ONLY as a cross-reference key when
+ * parsing Game.log — never as the storage primary key. CIG has been
+ * observed to rotate this value during backend migrations (Oct→Dec
+ * 2024), so it's not a stable identifier.
+ */
+export type Account = { id: RecordId; 
+/**
+ * Current RSI handle, e.g. `"VeeLume"`. Mutable — user can rename
+ * via a paid handle change. Don't use as a join key.
+ */
+handle: string; 
+/**
+ * UEE citizen record number from the public profile (`#1196670`).
+ * Immutable, assigned at account creation. `None` until the user
+ * triggers a profile-verify scrape.
+ */
+citizen_record: number | null; 
+/**
+ * Account creation date from the public profile (`"2016-01-31"`).
+ * Immutable. `None` until verified.
+ */
+enlisted: string | null; 
+/**
+ * When the profile was last successfully scraped + verified.
+ * `None` if never verified. Drives the "re-verify if stale" decay.
+ */
+last_verified: string | null; 
+/**
+ * Launcher / in-log numeric account id (CIG's `heapAccountId`).
+ * Optional cross-reference for log parsing. Never used as a key.
+ */
+account_hint: number | null; created_at: string }
+export type ActiveScope = { platform: Platform; channel: string; account: Account }
+export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
 /**
  * Lean view of a sc-contracts `BlueprintItem` for the catalog UI.
  * 
@@ -97,32 +166,15 @@ export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall
  */
 export type BpView = { pool_guid: string; pool_name: string; blueprint_record_guid: string; crafted_entity_guid: string | null; 
 /**
- * Resolved display name. `None` until Stage 2 wires LocaleMap-driven
- * name resolution; UI should fall back to the GUID for now.
+ * Resolved display name. `None` when LocaleMap doesn't resolve;
+ * UI should fall back to the GUID.
  */
 display_name: string | null; weight: number }
 /**
- * Which set of SC servers a piece of personal state belongs to.
- * 
- * SC's Live and Hotfix channels share the persistent universe (PU);
- * progress in one persists into the other. PTU, EPTU, and Tech Preview
- * run on separate test shards that wipe regularly. We keep them
- * strictly separated so test progress never pollutes the PU state.
- */
-export type ChannelGroup = 
-/**
- * Persistent Universe (Live + Hotfix). Long-lived state.
- */
-"pu" | 
-/**
- * Test shards (PTU, EPTU, TechPreview). Wipes frequently.
- */
-"test"
-/**
  * A blueprint the user has acquired in-game. Unique by
- * `(blueprint_guid, channel_group, account_id)` — the same BP can be
- * "owned" independently in PU and on the test shards, and (later)
- * across multiple RSI accounts on the same desktop.
+ * `(blueprint_guid, platform, account_id)` — the same BP can be
+ * independently "owned" on prod and on a test shard, and across
+ * multiple RSI accounts on the same desktop.
  */
 export type OwnedBlueprint = { id: RecordId; 
 /**
@@ -130,13 +182,32 @@ export type OwnedBlueprint = { id: RecordId;
  * uses externally. String here so the type stays serde/specta-friendly
  * without pulling sc-extract into the IPC layer.
  */
-blueprint_guid: string; channel_group: ChannelGroup; 
+blueprint_guid: string; platform: Platform; 
 /**
- * RSI account this ownership belongs to. Empty string until
- * account detection lands — accommodates the v1 single-account
- * default while keeping the column shape stable for later.
+ * FK to `accounts.id`.
  */
-account_id: string; owned_at: string }
+account_id: RecordId; owned_at: string }
+/**
+ * Which SC services environment a piece of personal state belongs to.
+ * 
+ * Matches CIG's launcher-store `platform_id` value verbatim: Live and
+ * Hotfix run on `prod` (the persistent universe; long-lived state).
+ * PTU, EPTU, and Tech Preview run on `ptu` test shards that wipe
+ * regularly. Strict separation keeps test-shard progress from
+ * polluting PU state.
+ * 
+ * Storage form is the lowercase string (`'prod'` / `'ptu'`) — same as
+ * what `sc_installs::Installation::platform_id` produces.
+ */
+export type Platform = 
+/**
+ * Production / persistent universe (Live + Hotfix).
+ */
+"prod" | 
+/**
+ * Test shards (PTU + EPTU + Tech Preview). Wipes frequently.
+ */
+"ptu"
 /**
  * Stable record-level identifier. UUIDv7 so it's time-sortable and
  * generated client-side without a central authority. Wraps `Uuid` rather
@@ -147,7 +218,11 @@ export type RecordId = string
 /**
  * A blueprint the user wants. Surfaces in lists / craft suggestions.
  */
-export type WishlistEntry = { id: RecordId; blueprint_guid: string; channel_group: ChannelGroup; account_id: string; added_at: string }
+export type WishlistEntry = { id: RecordId; blueprint_guid: string; platform: Platform; 
+/**
+ * FK to `accounts.id`.
+ */
+account_id: RecordId; added_at: string }
 
 /** tauri-specta globals **/
 

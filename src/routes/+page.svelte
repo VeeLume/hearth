@@ -1,22 +1,55 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { commands, type BpView } from "$lib/bindings";
+  import { commands, type ActiveScope, type BpView } from "$lib/bindings";
 
   let blueprints = $state<BpView[]>([]);
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let query = $state("");
+  let scope = $state<ActiveScope | null>(null);
+  let verifying = $state(false);
+  let verifyMessage = $state<string | null>(null);
 
   onMount(async () => {
-    const result = await commands.listBlueprints();
-    if (result.status === "ok") {
-      blueprints = result.data;
+    // Kick off both in parallel — activeScope triggers the same SC load
+    // listBlueprints needs, so they share the cost.
+    const [bpResult, scopeResult] = await Promise.all([
+      commands.listBlueprints(),
+      commands.activeScope(),
+    ]);
+    if (bpResult.status === "ok") {
+      blueprints = bpResult.data;
     } else {
-      // AppError uses {kind, message} (serde tag/content)
-      errorMessage = `${result.error.kind}: ${result.error.message}`;
+      errorMessage = `${bpResult.error.kind}: ${bpResult.error.message}`;
+    }
+    if (scopeResult.status === "ok") {
+      scope = scopeResult.data;
     }
     loading = false;
   });
+
+  async function verify() {
+    if (!scope) return;
+    verifying = true;
+    verifyMessage = null;
+    const result = await commands.verifyAccount(scope.account.id);
+    if (result.status === "ok") {
+      scope = { ...scope, account: result.data };
+      verifyMessage = `verified · #${result.data.citizen_record}`;
+    } else {
+      verifyMessage = `${result.error.kind}: ${result.error.message}`;
+    }
+    verifying = false;
+  }
+
+  function platformLabel(p: ActiveScope["platform"]): string {
+    return p === "prod" ? "PU" : "PTU";
+  }
+  function channelLabel(c: string): string {
+    // sc_installs::Channel::display_name() already returns "LIVE",
+    // "HOTFIX", "PTU", etc. — show uppercase verbatim.
+    return c.toUpperCase();
+  }
 
   let filtered = $derived.by(() => {
     const q = query.toLowerCase().trim();
@@ -53,7 +86,25 @@
 <header>
   <div class="title-row">
     <h1>Hearth</h1>
-    <span class="badge">v0.0.1 · Stage 2</span>
+    <span class="badge">v0.0.1 · Stage 2.5</span>
+    {#if scope}
+      <span class="scope-chip" title={`Citizen record: ${scope.account.citizen_record ?? "unverified"} · Enlisted: ${scope.account.enlisted ?? "unverified"}`}>
+        <span class="scope-platform">{platformLabel(scope.platform)}</span>
+        <span class="scope-sep">·</span>
+        <span class="scope-channel">{channelLabel(scope.channel)}</span>
+        <span class="scope-sep">·</span>
+        <span class="scope-handle">@{scope.account.handle}</span>
+        {#if scope.account.last_verified}
+          <span class="scope-verified" title={`Last verified ${scope.account.last_verified}`}>✓</span>
+        {/if}
+      </span>
+      <button class="verify-btn" onclick={verify} disabled={verifying}>
+        {verifying ? "Verifying…" : (scope.account.last_verified ? "Re-verify" : "Verify")}
+      </button>
+      {#if verifyMessage}
+        <span class="verify-msg">{verifyMessage}</span>
+      {/if}
+    {/if}
   </div>
   <p class="muted">Blueprint catalog.</p>
 </header>
@@ -141,6 +192,57 @@
     padding: 0.15rem 0.5rem;
     border: 1px solid #333;
     border-radius: 4px;
+  }
+  .scope-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.55rem;
+    background: #1d1d22;
+    border: 1px solid #2c2c34;
+    border-radius: 4px;
+    color: #b8b8c2;
+    font-variant-numeric: tabular-nums;
+  }
+  .scope-platform {
+    color: #8bc;
+    font-weight: 600;
+  }
+  .scope-channel {
+    color: #ada;
+  }
+  .scope-handle {
+    color: #d8d8e8;
+  }
+  .scope-sep {
+    color: #555;
+  }
+  .scope-verified {
+    color: #6c9;
+    margin-left: 0.15rem;
+  }
+  .verify-btn {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    background: transparent;
+    color: #aab;
+    border: 1px solid #333;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .verify-btn:hover:not(:disabled) {
+    background: #1d1d22;
+    color: #ccd;
+    border-color: #4d6cf3;
+  }
+  .verify-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+  .verify-msg {
+    color: #888;
+    font-size: 0.7rem;
   }
   .muted {
     color: #888;
