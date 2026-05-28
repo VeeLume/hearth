@@ -29,8 +29,9 @@ const TABLE: Record<string, Omit<Category, "sub" | "subOrder"> & { sub: string; 
   //    meaningful Size axis isn't captured yet) ──
   WeaponGun: { main: "Ship Weapons", mainOrder: 11, sub: "", subOrder: 0 },
 
-  // ── Weapon Attachments (magazines / batteries) ──
-  WeaponAttachment: { main: "Weapon Attachments", mainOrder: 12, sub: "", subOrder: 0 },
+  // ── Magazines & batteries (all current WeaponAttachment BPs are
+  //    SubType "Magazine" — ballistic mags + energy batteries) ──
+  WeaponAttachment: { main: "Magazines & Batteries", mainOrder: 12, sub: "", subOrder: 0 },
 
   // ── Armor (subdivided by slot) ──
   Char_Armor_Undersuit: { main: "Armor", mainOrder: 20, sub: "Undersuits", subOrder: 1 },
