@@ -22,7 +22,18 @@
 
   let active = $state("catalog");
 
-  type Bp = { name: string; guid: string; owned: boolean; wished: boolean };
+  // owned = you own the BLUEPRINT (the recipe).
+  // wantRecipe = you want to ACQUIRE the blueprint (mission-planning goal).
+  //              Only meaningful while unowned — owning means you have it.
+  // wantItem   = you want a CRAFTED COPY of the item in hand (crafting /
+  //              community-craft-for-you goal). Independent of ownership.
+  type Bp = {
+    name: string;
+    guid: string;
+    owned: boolean;
+    wantRecipe: boolean;
+    wantItem: boolean;
+  };
   type Pool = { name: string; bps: Bp[] };
 
   // Fake catalog so the layout has something realistic to frame.
@@ -30,36 +41,41 @@
     {
       name: "Ship Weapons",
       bps: [
-        { name: "Attrition-3 Laser Repeater", guid: "a1b2c3", owned: true, wished: false },
-        { name: "CF-337 Panther Repeater", guid: "d4e5f6", owned: false, wished: true },
-        { name: "M5A Laser Cannon", guid: "079abc", owned: false, wished: false },
-        { name: "Scorpion GT-215 Gatling", guid: "112233", owned: true, wished: false },
+        { name: "Attrition-3 Laser Repeater", guid: "a1b2c3", owned: true, wantRecipe: false, wantItem: true },
+        { name: "CF-337 Panther Repeater", guid: "d4e5f6", owned: false, wantRecipe: true, wantItem: false },
+        { name: "M5A Laser Cannon", guid: "079abc", owned: false, wantRecipe: false, wantItem: false },
+        { name: "Scorpion GT-215 Gatling", guid: "112233", owned: true, wantRecipe: false, wantItem: false },
       ],
     },
     {
       name: "Mining Modules",
       bps: [
-        { name: "Lifeline Medical Module", guid: "445566", owned: false, wished: false },
-        { name: "Hofstede S1 Mining Head", guid: "778899", owned: true, wished: true },
-        { name: "Helix I Mining Head", guid: "aabbcc", owned: false, wished: false },
+        { name: "Lifeline Medical Module", guid: "445566", owned: false, wantRecipe: false, wantItem: true },
+        { name: "Hofstede S1 Mining Head", guid: "778899", owned: true, wantRecipe: false, wantItem: true },
+        { name: "Helix I Mining Head", guid: "aabbcc", owned: false, wantRecipe: true, wantItem: true },
       ],
     },
     {
       name: "Personal Armor",
       bps: [
-        { name: "Pembroke Heavy Helmet", guid: "ddeeff", owned: false, wished: false },
-        { name: "ORC-mkII Core", guid: "123456", owned: false, wished: true },
+        { name: "Pembroke Heavy Helmet", guid: "ddeeff", owned: false, wantRecipe: false, wantItem: false },
+        { name: "ORC-mkII Core", guid: "123456", owned: false, wantRecipe: true, wantItem: false },
       ],
     },
   ]);
 
-  type Filter = "all" | "owned" | "unowned" | "wishlist";
+  type Filter = "all" | "owned" | "unowned" | "wished";
   let filter = $state<Filter>("all");
   let query = $state("");
 
   const allBps = $derived(pools.flatMap((p) => p.bps));
   const ownedCount = $derived(allBps.filter((b) => b.owned).length);
-  const wishCount = $derived(allBps.filter((b) => b.wished).length);
+  const recipeWishes = $derived(allBps.filter((b) => b.wantRecipe));
+  const itemWishes = $derived(allBps.filter((b) => b.wantItem));
+  // Sidebar badge: distinct BPs with any wish on them.
+  const wishCount = $derived(
+    allBps.filter((b) => b.wantRecipe || b.wantItem).length,
+  );
 
   const visiblePools = $derived.by(() => {
     const q = query.toLowerCase().trim();
@@ -69,7 +85,7 @@
         bps: p.bps.filter((b) => {
           if (filter === "owned" && !b.owned) return false;
           if (filter === "unowned" && b.owned) return false;
-          if (filter === "wishlist" && !b.wished) return false;
+          if (filter === "wished" && !(b.wantRecipe || b.wantItem)) return false;
           if (q && !(b.name.toLowerCase().includes(q) || b.guid.includes(q)))
             return false;
           return true;
@@ -82,15 +98,20 @@
     { id: "all", label: "All" },
     { id: "owned", label: "Owned" },
     { id: "unowned", label: "Unowned" },
-    { id: "wishlist", label: "Wishlist" },
+    { id: "wished", label: "Wished" },
   ];
 
   function activeLabel(id: string) {
+    if (id === "settings") return "Settings";
     return (
       primaryNav.find((n) => n.id === id)?.label ??
       futureNav.find((n) => n.id === id)?.label ??
       ""
     );
+  }
+  function activeIcon(id: string) {
+    if (id === "settings") return "⚙";
+    return [...primaryNav, ...futureNav].find((n) => n.id === id)?.icon ?? "";
   }
 </script>
 
@@ -141,6 +162,15 @@
             <span class="verified" title="Verified Jan 31, 2016 · #1196670">✓</span>
           </span>
         </div>
+        <button
+          class="cog"
+          class:active={active === "settings"}
+          title="Settings"
+          aria-label="Settings"
+          onclick={() => (active = "settings")}
+        >
+          ⚙
+        </button>
       </div>
     </div>
   </aside>
@@ -164,17 +194,24 @@
 
     {#if active === "catalog"}
       <div class="filterbar">
-        {#each filters as f (f.id)}
-          <button
-            class="chip"
-            class:on={filter === f.id}
-            onclick={() => (filter = f.id)}
-          >
-            {f.label}
-            {#if f.id === "owned"}<span class="chip-n">{ownedCount}</span>{/if}
-            {#if f.id === "wishlist"}<span class="chip-n">{wishCount}</span>{/if}
-          </button>
-        {/each}
+        <div class="chips">
+          {#each filters as f (f.id)}
+            <button
+              class="chip"
+              class:on={filter === f.id}
+              onclick={() => (filter = f.id)}
+            >
+              {f.label}
+              {#if f.id === "owned"}<span class="chip-n">{ownedCount}</span>{/if}
+              {#if f.id === "wished"}<span class="chip-n">{wishCount}</span>{/if}
+            </button>
+          {/each}
+        </div>
+        <div class="legend">
+          <span class="legend-item"><span class="legend-icon own">✓</span> own BP</span>
+          <span class="legend-item"><span class="legend-icon">📘</span> want BP</span>
+          <span class="legend-item"><span class="legend-icon item">★</span> want item</span>
+        </div>
       </div>
 
       <section class="catalog">
@@ -190,21 +227,47 @@
                   <button
                     class="own-toggle"
                     class:on={bp.owned}
-                    title={bp.owned ? "Owned — click to unmark" : "Mark owned"}
+                    title={bp.owned
+                      ? "Blueprint owned — click to unmark"
+                      : "Mark blueprint owned"}
                     onclick={() => (bp.owned = !bp.owned)}
                   >
                     {bp.owned ? "✓" : ""}
                   </button>
                   <span class="bp-name">{bp.name}</span>
                   <span class="bp-guid">{bp.guid}</span>
-                  <button
-                    class="wish-toggle"
-                    class:on={bp.wished}
-                    title={bp.wished ? "On wishlist" : "Add to wishlist"}
-                    onclick={() => (bp.wished = !bp.wished)}
-                  >
-                    ★
-                  </button>
+
+                  <div class="wish-group">
+                    <!-- want the BLUEPRINT (recipe) — only while unowned -->
+                    {#if !bp.owned}
+                      <button
+                        class="wish recipe"
+                        class:on={bp.wantRecipe}
+                        title={bp.wantRecipe
+                          ? "Want this blueprint — remove"
+                          : "Want this blueprint (recipe)"}
+                        onclick={() => (bp.wantRecipe = !bp.wantRecipe)}
+                      >
+                        📘
+                      </button>
+                    {:else}
+                      <span class="wish placeholder-slot" title="Blueprint owned"
+                        >·</span
+                      >
+                    {/if}
+
+                    <!-- want a CRAFTED ITEM — always available -->
+                    <button
+                      class="wish item"
+                      class:on={bp.wantItem}
+                      title={bp.wantItem
+                        ? "Want a crafted copy — remove"
+                        : "Want a crafted copy of the item"}
+                      onclick={() => (bp.wantItem = !bp.wantItem)}
+                    >
+                      ★
+                    </button>
+                  </div>
                 </li>
               {/each}
             </ul>
@@ -214,15 +277,79 @@
           <p class="empty">Nothing matches this filter.</p>
         {/if}
       </section>
+    {:else if active === "wishlist"}
+      <section class="wishlist">
+        <!-- Two intents, two sections, one underlying BP↔item identity. -->
+        <div class="wish-section">
+          <div class="wish-section-head">
+            <span class="wish-section-icon">📘</span>
+            <h2>Blueprints I want</h2>
+            <span class="wish-section-count">{recipeWishes.length}</span>
+          </div>
+          <p class="wish-section-sub">
+            Recipes to acquire. Fulfilled by mission rewards — the Missions
+            view will highlight which missions drop these.
+          </p>
+          {#if recipeWishes.length === 0}
+            <p class="empty">No blueprint wishes yet.</p>
+          {:else}
+            <ul class="wish-list">
+              {#each recipeWishes as bp (bp.guid)}
+                <li>
+                  <span class="bp-name">{bp.name}</span>
+                  <span class="status hunt">⛏ find via mission</span>
+                  <button
+                    class="wish recipe on"
+                    title="Remove blueprint wish"
+                    onclick={() => (bp.wantRecipe = false)}>📘</button
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <div class="wish-section">
+          <div class="wish-section-head">
+            <span class="wish-section-icon">★</span>
+            <h2>Items I want</h2>
+            <span class="wish-section-count">{itemWishes.length}</span>
+          </div>
+          <p class="wish-section-sub">
+            Crafted copies to obtain. Status reflects whether you can make it
+            yet — crafting guidance fills in at v1.5; a friend crafting it for
+            you arrives with the community layer (v2).
+          </p>
+          {#if itemWishes.length === 0}
+            <p class="empty">No item wishes yet.</p>
+          {:else}
+            <ul class="wish-list">
+              {#each itemWishes as bp (bp.guid)}
+                <li>
+                  <span class="bp-name">{bp.name}</span>
+                  {#if bp.owned}
+                    <span class="status ready">✓ recipe owned · craftable</span>
+                  {:else}
+                    <span class="status blocked">⚠ need blueprint first</span>
+                  {/if}
+                  <button
+                    class="wish item on"
+                    title="Remove item wish"
+                    onclick={() => (bp.wantItem = false)}>★</button
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </section>
     {:else}
       <section class="placeholder">
-        <span class="ph-icon">
-          {[...primaryNav, ...futureNav].find((n) => n.id === active)?.icon}
-        </span>
+        <span class="ph-icon">{activeIcon(active)}</span>
         <p>{activeLabel(active)} view — layout TBD.</p>
         <p class="ph-hint">
-          This mockup focuses on the Catalog. The other views reuse the
-          same shell (sidebar + topbar + content).
+          This mockup focuses on the Catalog + Wishlist. The other views reuse
+          the same shell (sidebar + topbar + content).
         </p>
       </section>
     {/if}
@@ -392,6 +519,29 @@
   .verified {
     color: var(--good);
   }
+  .cog {
+    margin-left: auto;
+    flex: 0 0 auto;
+    width: 1.9rem;
+    height: 1.9rem;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1rem;
+    transition: background 90ms, color 90ms;
+  }
+  .cog:hover {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .cog.active {
+    background: var(--ember-glow);
+    color: var(--ember);
+  }
 
   /* ── Main ── */
   main {
@@ -437,8 +587,34 @@
 
   .filterbar {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     padding: 0.85rem 1.6rem;
+  }
+  .chips {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .legend {
+    margin-left: auto;
+    display: flex;
+    gap: 0.9rem;
+    font-size: 0.72rem;
+    color: var(--faint);
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .legend-icon {
+    font-size: 0.8rem;
+  }
+  .legend-icon.own {
+    color: var(--ember);
+  }
+  .legend-icon.item {
+    color: var(--ember);
   }
   .chip {
     display: inline-flex;
@@ -551,24 +727,121 @@
     font-size: 0.72rem;
     color: var(--faint);
   }
-  .wish-toggle {
+  .wish-group {
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+  }
+  .wish {
     background: transparent;
     border: none;
     cursor: pointer;
     color: var(--faint);
     font-size: 0.95rem;
-    padding: 0.1rem 0.3rem;
-    transition: color 90ms, transform 90ms;
+    line-height: 1;
+    padding: 0.25rem 0.3rem;
+    border-radius: 6px;
+    filter: grayscale(1) opacity(0.55);
+    transition: filter 90ms, transform 90ms, background 90ms;
   }
-  .wish-toggle:hover {
-    transform: scale(1.15);
+  .wish:hover {
+    transform: scale(1.12);
+    filter: grayscale(0.4) opacity(0.9);
+    background: var(--panel-2);
   }
-  .wish-toggle.on {
+  .wish.on {
+    filter: none;
+  }
+  /* item-wish uses the ember star when active */
+  .wish.item.on {
     color: var(--ember);
+    filter: none;
+  }
+  .wish.placeholder-slot {
+    color: var(--faint);
+    opacity: 0.3;
+    cursor: default;
+    filter: none;
+    padding: 0.25rem 0.3rem;
+  }
+  .wish.placeholder-slot:hover {
+    transform: none;
+    background: transparent;
   }
   .empty {
     color: var(--muted);
     padding: 1.5rem 0.5rem;
+  }
+
+  /* ── Wishlist view ── */
+  .wishlist {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 1.6rem 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.75rem;
+  }
+  .wish-section-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+  .wish-section-icon {
+    font-size: 1.1rem;
+  }
+  .wish-section-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+  .wish-section-count {
+    font-size: 0.75rem;
+    color: var(--faint);
+    background: var(--panel-2);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .wish-section-sub {
+    margin: 0.35rem 0 0.75rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    max-width: 60ch;
+  }
+  .wish-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .wish-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    background: var(--panel);
+  }
+  .status {
+    font-size: 0.74rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 5px;
+    white-space: nowrap;
+  }
+  .status.ready {
+    color: var(--good);
+    background: rgba(108, 192, 138, 0.1);
+  }
+  .status.blocked {
+    color: #d9a441;
+    background: rgba(217, 164, 65, 0.1);
+  }
+  .status.hunt {
+    color: var(--muted);
+    background: var(--panel-2);
   }
 
   .placeholder {
