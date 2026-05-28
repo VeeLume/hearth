@@ -155,6 +155,33 @@ async fn remove_owned(
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
 
+/// Flip ownership of a blueprint in the active scope. Returns the new
+/// owned state (`true` = now owned). Stage 3's primary write path.
+#[tauri::command]
+#[specta::specta]
+async fn toggle_owned(
+    state: tauri::State<'_, AppState>,
+    blueprint_guid: String,
+) -> Result<bool, AppError> {
+    let scope = state.active_scope().await?;
+    let db = state.db().await?;
+    let currently_owned = hearth_storage::get_owned(db, scope, &blueprint_guid)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .is_some();
+    if currently_owned {
+        hearth_storage::remove_owned(db, scope, &blueprint_guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(false)
+    } else {
+        hearth_storage::add_owned(db, scope, &blueprint_guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(true)
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn list_wishlist(
@@ -268,6 +295,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         list_owned,
         add_owned,
         remove_owned,
+        toggle_owned,
         list_wishlist,
         add_to_wishlist,
         remove_from_wishlist,

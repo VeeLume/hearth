@@ -37,6 +37,18 @@ async removeOwned(blueprintGuid: string) : Promise<Result<boolean, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Flip ownership of a blueprint in the active scope. Returns the new
+ * owned state (`true` = now owned). Stage 3's primary write path.
+ */
+async toggleOwned(blueprintGuid: string) : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("toggle_owned", { blueprintGuid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listWishlist() : Promise<Result<WishlistEntry[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_wishlist") };
