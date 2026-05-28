@@ -21,19 +21,19 @@ fn main() {
         .expect("loader thread panicked");
     let bps = data.blueprints();
 
-    // type -> (count, sample display names)
-    let mut by_type: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    // (type, subtype) -> (count, sample display names)
+    let mut by_type: BTreeMap<(String, String), (usize, Vec<String>)> = BTreeMap::new();
     let mut none_count = 0usize;
+    let unique: std::collections::HashSet<&str> =
+        bps.iter().map(|b| b.blueprint_record_guid.as_str()).collect();
 
     for bp in &bps {
-        let key = match &bp.item_type {
-            Some(t) => t.clone(),
-            None => {
-                none_count += 1;
-                continue;
-            }
+        let Some(ty) = bp.item_type.clone() else {
+            none_count += 1;
+            continue;
         };
-        let entry = by_type.entry(key).or_default();
+        let sub = bp.item_sub_type.clone().unwrap_or_else(|| "—".into());
+        let entry = by_type.entry((ty, sub)).or_default();
         entry.0 += 1;
         if entry.1.len() < 4 {
             entry.1.push(
@@ -44,11 +44,15 @@ fn main() {
         }
     }
 
-    println!("\n=== item_type counts among {} blueprints ===", bps.len());
+    println!(
+        "\n=== (item_type, sub_type) among {} rows / {} unique BPs ===",
+        bps.len(),
+        unique.len()
+    );
     let mut rows: Vec<_> = by_type.into_iter().collect();
     rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-    for (ty, (count, samples)) in &rows {
-        println!("{count:>5}  {ty:<28}  e.g. {}", samples.join(", "));
+    for ((ty, sub), (count, samples)) in &rows {
+        println!("{count:>5}  {ty:<22} / {sub:<16}  e.g. {}", samples.join(", "));
     }
     if none_count > 0 {
         println!("{none_count:>5}  <no item_type>");

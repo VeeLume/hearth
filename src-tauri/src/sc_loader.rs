@@ -156,10 +156,18 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     let registry = BlueprintPoolRegistry::build(datacore);
     let cache = &datacore.snapshot().localized_items;
 
+    // A blueprint crafts exactly one item, but the same blueprint can
+    // appear in several reward pools — so the registry yields duplicate
+    // entries per blueprint_record_guid. The catalog wants each
+    // blueprint once; dedup by record GUID, keeping the first sighting.
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for pool in registry.iter() {
         for item in &pool.items {
             let mut view = hearth_core::sc_data::bp_view(item, pool);
+            if !seen.insert(view.blueprint_record_guid.clone()) {
+                continue;
+            }
             view.display_name = item.display_name(cache, locale).map(|s| s.to_owned());
             if let Some(entity_guid) = item.crafted_entity_guid {
                 view.item_type = cache.item_type(&entity_guid).map(str::to_owned);

@@ -60,7 +60,7 @@
       if (q) {
         const name = bp.display_name?.toLowerCase() ?? "";
         const guid = bp.blueprint_record_guid.toLowerCase();
-        const cat = categoryFor(bp.item_type);
+        const cat = categoryFor(bp.item_type, bp.item_sub_type);
         const catText = `${cat.main} ${cat.sub}`.toLowerCase();
         if (!(name.includes(q) || guid.includes(q) || catText.includes(q)))
           return false;
@@ -83,7 +83,7 @@
   const grouped = $derived.by((): MainGroup[] => {
     const mains = new Map<string, MainGroup & { subMap: Map<string, SubGroup> }>();
     for (const bp of filtered) {
-      const cat = categoryFor(bp.item_type);
+      const cat = categoryFor(bp.item_type, bp.item_sub_type);
       let main = mains.get(cat.main);
       if (!main) {
         main = {
@@ -181,10 +181,12 @@
         </div>
         {#each mainGroup.subs as subGroup (subGroup.sub)}
           <div class="pool">
-            <div class="pool-head">
-              <span class="pool-name">{subGroup.sub}</span>
-              <span class="pool-count">{subGroup.items.length}</span>
-            </div>
+            {#if subGroup.sub}
+              <div class="pool-head">
+                <span class="pool-name">{subGroup.sub}</span>
+                <span class="pool-count">{subGroup.items.length}</span>
+              </div>
+            {/if}
             <ul>
               {#each subGroup.items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
                 {@const isOwned = owned.has(bp.blueprint_record_guid)}
