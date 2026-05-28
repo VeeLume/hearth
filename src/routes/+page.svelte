@@ -7,6 +7,7 @@
   let errorMessage = $state<string | null>(null);
   let query = $state("");
   let scope = $state<ActiveScope | null>(null);
+  let scopeError = $state<string | null>(null);
   let verifying = $state(false);
   let verifyMessage = $state<string | null>(null);
 
@@ -24,6 +25,10 @@
     }
     if (scopeResult.status === "ok") {
       scope = scopeResult.data;
+    } else {
+      // Don't fail silently — a broken scope (e.g. stale DB schema, no
+      // launcher identity) used to just hide the chip with no hint why.
+      scopeError = `${scopeResult.error.kind}: ${scopeResult.error.message}`;
     }
     loading = false;
   });
@@ -104,6 +109,8 @@
       {#if verifyMessage}
         <span class="verify-msg">{verifyMessage}</span>
       {/if}
+    {:else if scopeError}
+      <span class="scope-error" title={scopeError}>⚠ scope unavailable</span>
     {/if}
   </div>
   <p class="muted">Blueprint catalog.</p>
@@ -243,6 +250,11 @@
   .verify-msg {
     color: #888;
     font-size: 0.7rem;
+  }
+  .scope-error {
+    color: #f5a;
+    font-size: 0.72rem;
+    cursor: help;
   }
   .muted {
     color: #888;
