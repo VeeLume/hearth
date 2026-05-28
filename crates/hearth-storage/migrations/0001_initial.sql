@@ -4,38 +4,51 @@
 -- Timestamp convention: ISO 8601 UTC strings via TEXT.
 --
 -- Scope keys on every personal-data row:
---   - channel_group : 'pu' or 'test'  — PU (Live + Hotfix) is persistent;
---                                       test shards (PTU/EPTU/TechPreview)
---                                       wipe regularly and must not pollute
---                                       PU state.
---   - account_id    : RSI handle the data belongs to. Empty string until
---                     account detection lands; reserved so multi-account
---                     on the same desktop doesn't need a future migration.
+--   - platform_id : 'prod' or 'ptu' — matches CIG's launcher-store
+--                   platform_id field. 'prod' (Live + Hotfix) is the
+--                   persistent universe; 'ptu' (PTU/EPTU/TechPreview)
+--                   are test shards that wipe regularly. Strict
+--                   separation prevents test progress polluting PU.
+--   - account_id  : FK to accounts.id (UUIDv7 Hearth-local). One row
+--                   per RSI account this desktop has seen.
+
+CREATE TABLE accounts (
+    id              TEXT PRIMARY KEY,             -- UUIDv7
+    handle          TEXT NOT NULL UNIQUE,         -- current RSI handle
+    citizen_record  INTEGER,                      -- public profile #
+    enlisted        TEXT,                         -- public profile date
+    last_verified   TEXT,                         -- last profile scrape ts
+    account_hint    INTEGER,                      -- heapAccountId hint
+    created_at      TEXT NOT NULL
+);
+
 
 CREATE TABLE owned_blueprints (
     id              TEXT PRIMARY KEY,
     blueprint_guid  TEXT NOT NULL,
-    channel_group   TEXT NOT NULL,
-    account_id      TEXT NOT NULL DEFAULT '',
+    platform_id     TEXT NOT NULL,
+    account_id      TEXT NOT NULL
+        REFERENCES accounts(id) ON DELETE CASCADE,
     owned_at        TEXT NOT NULL,
-    UNIQUE(blueprint_guid, channel_group, account_id)
+    UNIQUE(blueprint_guid, platform_id, account_id)
 );
 
 CREATE INDEX idx_owned_blueprints_scope
-    ON owned_blueprints(channel_group, account_id);
+    ON owned_blueprints(platform_id, account_id);
 
 
 CREATE TABLE mission_completions (
     id            TEXT PRIMARY KEY,
     mission_id    TEXT NOT NULL,
-    channel_group TEXT NOT NULL,
-    account_id    TEXT NOT NULL DEFAULT '',
+    platform_id   TEXT NOT NULL,
+    account_id    TEXT NOT NULL
+        REFERENCES accounts(id) ON DELETE CASCADE,
     completed_at  TEXT NOT NULL,
-    UNIQUE(mission_id, channel_group, account_id)
+    UNIQUE(mission_id, platform_id, account_id)
 );
 
 CREATE INDEX idx_mission_completions_scope
-    ON mission_completions(channel_group, account_id);
+    ON mission_completions(platform_id, account_id);
 
 
 CREATE TABLE mission_rewards_collected (
@@ -49,14 +62,15 @@ CREATE TABLE mission_rewards_collected (
 CREATE TABLE wishlist_entries (
     id              TEXT PRIMARY KEY,
     blueprint_guid  TEXT NOT NULL,
-    channel_group   TEXT NOT NULL,
-    account_id      TEXT NOT NULL DEFAULT '',
+    platform_id     TEXT NOT NULL,
+    account_id      TEXT NOT NULL
+        REFERENCES accounts(id) ON DELETE CASCADE,
     added_at        TEXT NOT NULL,
-    UNIQUE(blueprint_guid, channel_group, account_id)
+    UNIQUE(blueprint_guid, platform_id, account_id)
 );
 
 CREATE INDEX idx_wishlist_entries_scope
-    ON wishlist_entries(channel_group, account_id);
+    ON wishlist_entries(platform_id, account_id);
 
 
 -- Reserved for v2 sync. Empty + unused in v1.

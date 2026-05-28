@@ -25,17 +25,24 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 
+# RSI /citizens/<handle> scraper. `scraper` is pure HTML parsing (lives
+# in hearth-core::profile); `reqwest` is the HTTP fetcher (lives in
+# src-tauri/src/identity.rs). rustls-tls keeps Windows builds clean of
+# OpenSSL.
+scraper = "0.20"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+
 # Type-safe Tauri IPC + TypeScript bindings (matches sc-langpatch).
 # specta features: chrono for DateTime<Utc>, uuid for the Uuid newtype.
-specta = { version = "2.0.0-rc.21", features = ["chrono", "uuid"] }
+specta = { version = "2.0.0-rc.21", features = ["chrono", "uuid", "derive"] }
 specta-typescript = "0.0.9"
 tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 
 # sc-holotable family (pin matches sc-langpatch v0.5.0 so cross-repo work shares the same SC data shapes)
-sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0", features = ["contracts", "servicebeacon", "entities"] }
-sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.5.0" }
+sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0", features = ["contracts", "servicebeacon", "entities"] }
+sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.6.0" }
 
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }

@@ -14,6 +14,8 @@ pub enum AppError {
     Storage(String),
     #[error("no SC install detected: {0}")]
     NoInstall(String),
+    #[error("identity scrape failed: {0}")]
+    Identity(String),
     #[error("internal error: {0}")]
     Internal(String),
 }

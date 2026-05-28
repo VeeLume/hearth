@@ -3,9 +3,11 @@
 //! Types here are linked by both desktop (`hearth-app`) and server
 //! (`hearth-server`, v2+) so domain stays single-source-of-truth.
 
+pub mod profile;
 pub mod sc_data;
 pub mod types;
 
+pub use profile::{ProfileError, ProfileInfo};
 pub use types::{
-    BpView, ChannelGroup, MissionCompletion, OwnedBlueprint, RecordId, WishlistEntry,
+    Account, BpView, MissionCompletion, OwnedBlueprint, Platform, RecordId, WishlistEntry,
 };

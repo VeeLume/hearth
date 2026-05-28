@@ -1,14 +1,16 @@
 //! Tauri shell for Hearth.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use hearth_core::{BpView, ChannelGroup, OwnedBlueprint, WishlistEntry};
+use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishlistEntry};
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::Typescript;
 use tauri_specta::{Builder, collect_commands};
 use tokio::sync::{Mutex, OnceCell};
 
 pub mod error;
+pub mod identity;
 pub mod sc_loader;
 pub mod sensors;
 
@@ -18,15 +20,9 @@ use sc_loader::LoadedScData;
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct AppState {
-    /// Cached SC reference data. Boxed because the unboxed struct
-    /// overflows the small-stack tokio receiver mid-move (see
-    /// `sc_loader` docs).
-    ///
-    /// One entry per `ChannelGroup` — PU and Test are loaded
-    /// independently so switching between them later doesn't trash
-    /// the other's cache. Stage 2 only loads the active group on
-    /// first call; Stage 3 wires a UI switch.
-    sc_data: Mutex<std::collections::HashMap<ChannelGroup, Box<LoadedScData>>>,
+    /// Cached SC reference data per platform (Prod / Ptu loaded
+    /// independently, lazily on first BP-catalog call).
+    sc_data: Mutex<HashMap<Platform, Box<LoadedScData>>>,
     /// SQLite pool, lazily initialized on first DB-needing command on
     /// Tauri's own tokio runtime.
     db: OnceCell<DbPool>,
@@ -43,39 +39,67 @@ impl AppState {
             .await
     }
 
-    /// Returns the loaded data for the currently-active channel group.
-    /// In Stage 2 there's only ever one — whichever was loaded first
-    /// (the highest-priority install per `sc_loader::load_inner`).
-    /// Loads on demand if not present.
+    /// Load (if needed) the SC data for the highest-priority install,
+    /// returning a guard that holds the lock for the duration of the
+    /// caller's read. In Stage 2.5 only one platform is loaded eagerly;
+    /// Stage 3+ adds a channel switcher.
     async fn loaded(&self) -> Result<LoadedRef<'_>, AppError> {
         let mut guard = self.sc_data.lock().await;
         if guard.is_empty() {
             let loaded = LoadedScData::load_async()
                 .await
                 .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
-            guard.insert(loaded.channel_group, loaded);
+            guard.insert(loaded.platform, loaded);
         }
         Ok(LoadedRef { guard })
     }
-}
 
-/// RAII handle to the active loaded data. Drops the lock when it goes
-/// out of scope. Tauri commands borrow through this for the duration
-/// of their await.
-struct LoadedRef<'a> {
-    guard: tokio::sync::MutexGuard<'a, std::collections::HashMap<ChannelGroup, Box<LoadedScData>>>,
-}
-
-impl<'a> LoadedRef<'a> {
-    fn data(&self) -> &LoadedScData {
-        // Pick any (Stage 2 has at most one); deterministic for Stage 3
-        // when we switch by storing an explicit "active" group on state.
-        self.guard.values().next().expect("loaded data present")
+    /// Resolve the currently-active account, bootstrapping a row from
+    /// the launcher store's handle if needed. Returns the live `Account`
+    /// row.
+    ///
+    /// Bootstrap rule: at first run the launcher store's `nickname` is
+    /// the active account. If no `accounts` row matches, insert one.
+    /// Stage 3+ adds a multi-account picker on top of this.
+    async fn active_account(&self) -> Result<Account, AppError> {
+        let handle = {
+            let loaded = self.loaded().await?;
+            loaded
+                .data()
+                .handle
+                .clone()
+                .ok_or_else(|| AppError::Internal(
+                    "no RSI handle available — launcher store identity could not be read"
+                        .into(),
+                ))?
+        };
+        let db = self.db().await?;
+        hearth_storage::upsert_account_by_handle(db, &handle)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))
     }
 
-    fn scope(&self) -> Scope<'_> {
-        let d = self.data();
-        Scope::new(d.channel_group, d.account_id())
+    async fn active_scope(&self) -> Result<Scope, AppError> {
+        let platform = {
+            let loaded = self.loaded().await?;
+            loaded.data().platform
+        };
+        let account = self.active_account().await?;
+        Ok(Scope::new(platform, account.id))
+    }
+}
+
+/// RAII handle to one platform's loaded data. Drops the lock when out
+/// of scope.
+struct LoadedRef<'a> {
+    guard: tokio::sync::MutexGuard<'a, HashMap<Platform, Box<LoadedScData>>>,
+}
+
+impl LoadedRef<'_> {
+    fn data(&self) -> &LoadedScData {
+        // Stage 2.5: only one platform loaded at a time. Stage 3+
+        // stores an explicit "active platform" alongside the map.
+        self.guard.values().next().expect("loaded data present")
     }
 }
 
@@ -90,20 +114,15 @@ fn db_path() -> PathBuf {
 
 #[tauri::command]
 #[specta::specta]
-async fn list_blueprints(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<BpView>, AppError> {
+async fn list_blueprints(state: tauri::State<'_, AppState>) -> Result<Vec<BpView>, AppError> {
     let loaded = state.loaded().await?;
     Ok(loaded.data().blueprints())
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn list_owned(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<OwnedBlueprint>, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+async fn list_owned(state: tauri::State<'_, AppState>) -> Result<Vec<OwnedBlueprint>, AppError> {
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::list_owned(db, scope)
         .await
@@ -116,8 +135,7 @@ async fn add_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<OwnedBlueprint, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::add_owned(db, scope, &blueprint_guid)
         .await
@@ -130,8 +148,7 @@ async fn remove_owned(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::remove_owned(db, scope, &blueprint_guid)
         .await
@@ -143,8 +160,7 @@ async fn remove_owned(
 async fn list_wishlist(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WishlistEntry>, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::list_wishlist(db, scope)
         .await
@@ -157,8 +173,7 @@ async fn add_to_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<WishlistEntry, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::add_to_wishlist(db, scope, &blueprint_guid)
         .await
@@ -171,34 +186,74 @@ async fn remove_from_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
 ) -> Result<bool, AppError> {
-    let loaded = state.loaded().await?;
-    let scope = loaded.scope();
+    let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::remove_from_wishlist(db, scope, &blueprint_guid)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
 
-/// Surface the active channel + group + account to the UI so it can
-/// show "PU (LIVE)" or "Test (PTU)" badges and (eventually) drive a
-/// channel switcher.
+/// Surface the active platform + channel + account so the UI can show
+/// "PU · LIVE · @VeeLume" or similar. Triggers the bootstrap if needed
+/// (loads SC data + inserts the account row if missing).
 #[tauri::command]
 #[specta::specta]
 async fn active_scope(state: tauri::State<'_, AppState>) -> Result<ActiveScope, AppError> {
-    let loaded = state.loaded().await?;
-    let d = loaded.data();
+    let (platform, channel) = {
+        let loaded = state.loaded().await?;
+        let d = loaded.data();
+        (d.platform, d.channel.display_name().to_string())
+    };
+    let account = state.active_account().await?;
     Ok(ActiveScope {
-        channel: d.channel.display_name().to_string(),
-        channel_group: d.channel_group,
-        account_id: d.account_id().to_string(),
+        platform,
+        channel,
+        account,
     })
+}
+
+/// List every RSI account this desktop has known. Stage 3 wires this
+/// to a picker; Stage 2.5 just exposes the data.
+#[tauri::command]
+#[specta::specta]
+async fn list_accounts(state: tauri::State<'_, AppState>) -> Result<Vec<Account>, AppError> {
+    let db = state.db().await?;
+    hearth_storage::list_accounts(db)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))
+}
+
+/// Scrape `/citizens/<handle>` for the given account and write the
+/// immutable anchors (`citizen_record`, `enlisted`) back to the row.
+/// Refreshes `last_verified`. Returns the up-to-date `Account`.
+#[tauri::command]
+#[specta::specta]
+async fn verify_account(
+    state: tauri::State<'_, AppState>,
+    account_id: RecordId,
+) -> Result<Account, AppError> {
+    let db = state.db().await?;
+    let account = hearth_storage::get_account(db, account_id)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .ok_or_else(|| AppError::Internal(format!("account {account_id} not found")))?;
+    let info = identity::fetch_profile(&account.handle)
+        .await
+        .map_err(|e| AppError::Identity(format!("{e:#}")))?;
+    hearth_storage::update_account_anchors(db, account.id, info.citizen_record, &info.enlisted)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    hearth_storage::get_account(db, account.id)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .ok_or_else(|| AppError::Internal("account vanished after update".into()))
 }
 
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 struct ActiveScope {
+    platform: Platform,
     channel: String,
-    channel_group: ChannelGroup,
-    account_id: String,
+    account: Account,
 }
 
 // ── App setup ───────────────────────────────────────────────────────────────
@@ -206,7 +261,7 @@ struct ActiveScope {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState {
-        sc_data: Mutex::new(std::collections::HashMap::new()),
+        sc_data: Mutex::new(HashMap::new()),
         db: OnceCell::new(),
     };
 
@@ -219,6 +274,8 @@ pub fn run() {
         add_to_wishlist,
         remove_from_wishlist,
         active_scope,
+        list_accounts,
+        verify_account,
     ]);
 
     #[cfg(debug_assertions)]

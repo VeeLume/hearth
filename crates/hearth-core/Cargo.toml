@@ -12,5 +12,10 @@ serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 specta.workspace = true
+thiserror.workspace = true
 sc-contracts.workspace = true
 sc-extract.workspace = true
+scraper.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
