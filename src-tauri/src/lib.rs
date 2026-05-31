@@ -314,6 +314,44 @@ struct ActiveScope {
     account: Account,
 }
 
+// ── Debug commands ──────────────────────────────────────────────────────────
+
+/// Wipe the SC reference-data snapshot cache at
+/// `%APPDATA%/hearth/cache/` (every channel's `catalog.cook` +
+/// `extract.snap`) and restart the app so the OnceCells in AppState
+/// reload from scratch.
+///
+/// Personal-state data (the `hearth.db` SQLite) is *not* touched —
+/// owned blueprints, accounts, and the rest of `%APPDATA%/hearth/`
+/// outside `cache/` stays put. After the restart, the next launch
+/// runs the cold-path live parse (~30s on a typical install) before
+/// catalog UI becomes responsive again.
+///
+/// Diverges via `AppHandle::restart()` — never returns to the caller
+/// on success. The frontend should expect either an error reply or a
+/// hard restart.
+#[tauri::command]
+#[specta::specta]
+async fn wipe_sc_cache(app: tauri::AppHandle) -> Result<(), AppError> {
+    let cache_root = dirs::data_dir()
+        .map(|d| d.join("hearth").join("cache"))
+        .ok_or_else(|| AppError::Internal("no platform data dir".into()))?;
+    if cache_root.exists() {
+        std::fs::remove_dir_all(&cache_root).map_err(|e| {
+            AppError::Internal(format!(
+                "removing cache dir {}: {e}",
+                cache_root.display()
+            ))
+        })?;
+        tracing::info!(path = %cache_root.display(), "wiped SC snapshot cache");
+    } else {
+        tracing::info!("no SC cache dir present; nothing to wipe");
+    }
+    // `restart()` returns `!` — the process is replaced before the
+    // future ever resolves, so the Result `Ok` is never reached.
+    app.restart()
+}
+
 // ── App setup ───────────────────────────────────────────────────────────────
 
 /// Single source of truth for the IPC command list. Used both by
@@ -333,6 +371,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         active_scope,
         list_accounts,
         verify_account,
+        wipe_sc_cache,
     ])
 }
 

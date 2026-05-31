@@ -111,6 +111,30 @@ async verifyAccount(accountId: RecordId) : Promise<Result<Account, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Wipe the SC reference-data snapshot cache at
+ * `%APPDATA%/hearth/cache/` (every channel's `catalog.cook` +
+ * `extract.snap`) and restart the app so the OnceCells in AppState
+ * reload from scratch.
+ * 
+ * Personal-state data (the `hearth.db` SQLite) is *not* touched —
+ * owned blueprints, accounts, and the rest of `%APPDATA%/hearth/`
+ * outside `cache/` stays put. After the restart, the next launch
+ * runs the cold-path live parse (~30s on a typical install) before
+ * catalog UI becomes responsive again.
+ * 
+ * Diverges via `AppHandle::restart()` — never returns to the caller
+ * on success. The frontend should expect either an error reply or a
+ * hard restart.
+ */
+async wipeScCache() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wipe_sc_cache") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
