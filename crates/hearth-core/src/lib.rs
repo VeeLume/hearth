@@ -10,5 +10,5 @@ pub mod types;
 pub use profile::{ProfileError, ProfileInfo};
 pub use types::{
     Account, BpView, Ingredient, MissionCompletion, OwnedBlueprint, Platform, Recipe, RecordId,
-    WishlistEntry,
+    WishIntent, WishlistEntry,
 };

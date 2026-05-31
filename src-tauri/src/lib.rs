@@ -22,7 +22,7 @@
 
 use std::path::PathBuf;
 
-use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishlistEntry};
+use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry};
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::Manager;
@@ -225,30 +225,33 @@ async fn list_wishlist(
         .map_err(|e| AppError::Storage(format!("{e:#}")))
 }
 
+/// Flip one wishlist intent for a blueprint in the active scope. The two
+/// intents (`Recipe` = want the BP, `Item` = want a crafted copy) toggle
+/// independently. Returns the new state (`true` = now wanted).
 #[tauri::command]
 #[specta::specta]
-async fn add_to_wishlist(
+async fn toggle_wishlist(
     state: tauri::State<'_, AppState>,
     blueprint_guid: String,
-) -> Result<WishlistEntry, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    hearth_storage::add_to_wishlist(db, scope, &blueprint_guid)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn remove_from_wishlist(
-    state: tauri::State<'_, AppState>,
-    blueprint_guid: String,
+    intent: WishIntent,
 ) -> Result<bool, AppError> {
     let scope = state.active_scope().await?;
     let db = state.db().await?;
-    hearth_storage::remove_from_wishlist(db, scope, &blueprint_guid)
+    let currently_wanted = hearth_storage::get_wishlist_entry(db, scope, &blueprint_guid, intent)
         .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .is_some();
+    if currently_wanted {
+        hearth_storage::remove_from_wishlist(db, scope, &blueprint_guid, intent)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(false)
+    } else {
+        hearth_storage::add_to_wishlist(db, scope, &blueprint_guid, intent)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(true)
+    }
 }
 
 /// Surface the active platform + channel + account so the UI can show
@@ -366,8 +369,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         remove_owned,
         toggle_owned,
         list_wishlist,
-        add_to_wishlist,
-        remove_from_wishlist,
+        toggle_wishlist,
         active_scope,
         list_accounts,
         verify_account,

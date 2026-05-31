@@ -1,8 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, type BpView } from "$lib/bindings";
+  import { commands, type BpView, type WishIntent } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
+  import {
+    type Craftable,
+    nameOf,
+    variantSuffix,
+    collapseCraftables,
+  } from "$lib/catalog";
 
   let blueprints = $state<BpView[]>([]);
   // SvelteSet is reactive on .has() / .add() / .delete() — using a
@@ -10,6 +16,11 @@
   // dependent template expressions ({@const isOwned = owned.has(...)})
   // didn't always re-run after toggle.
   let owned = new SvelteSet<string>();
+  // Wishlist is two independent intents (a BP can carry both). Each set
+  // holds blueprint_record_guids wanted for that intent. Recipe = want
+  // the blueprint; item = want a crafted copy. See `WishIntent`.
+  let wishRecipe = new SvelteSet<string>();
+  let wishItem = new SvelteSet<string>();
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let query = $state("");
@@ -18,8 +29,13 @@
   // key on a stable composite (`bundle:<sorted-joined-guids>`).
   let expanded = new SvelteSet<string>();
 
-  type Filter = "all" | "owned" | "unowned";
+  type Filter = "all" | "owned" | "unowned" | "wantbp" | "wantitem";
   let filter = $state<Filter>("all");
+
+  /** The reactive set backing a wishlist intent. */
+  function wishSet(intent: WishIntent): SvelteSet<string> {
+    return intent === "recipe" ? wishRecipe : wishItem;
+  }
 
   function toggleExpanded(key: string) {
     if (expanded.has(key)) expanded.delete(key);
@@ -51,16 +67,9 @@
   // member's recipe; SC 4.8 data has every same-model variant (and
   // every duplicate BP) on the same recipe.
 
-  /** A craftable entity, possibly backed by several interchangeable
-   *  blueprints (same crafted_entity_guid). Ownership = own ANY of them. */
-  type Craftable = {
-    /** Representative BP (shortest name) — source of name/recipe/type/family. */
-    rep: BpView;
-    /** Every blueprint_record_guid that crafts this entity (>= 1). */
-    bpGuids: string[];
-    /** Stable identity — crafted entity guid, or the BP guid when none. */
-    entityKey: string;
-  };
+  // `Craftable` + the entity collapse live in `$lib/catalog` (shared with the
+  // wishlist page). The catalog's second collapse — variant/model bundling
+  // into Leaf/Bundle rows — is rendering-shaped and stays here.
 
   type Leaf = {
     kind: "leaf";
@@ -84,33 +93,8 @@
   };
   type GroupItem = Leaf | Bundle;
 
-  function nameOf(bp: BpView): string {
-    return bp.display_name ?? bp.blueprint_record_guid;
-  }
-
-  /** Collapse #1 — fold BPs that craft the same entity into one Craftable. */
-  function collapseCraftables(items: BpView[]): Craftable[] {
-    const byEntity = new Map<string, BpView[]>();
-    const out: Craftable[] = [];
-    for (const bp of items) {
-      const key = bp.crafted_entity_guid;
-      if (!key) {
-        // No crafted entity to dedupe on — standalone craftable.
-        out.push({ rep: bp, bpGuids: [bp.blueprint_record_guid], entityKey: bp.blueprint_record_guid });
-        continue;
-      }
-      const arr = byEntity.get(key) ?? [];
-      arr.push(bp);
-      byEntity.set(key, arr);
-    }
-    for (const [key, arr] of byEntity) {
-      const rep = arr.reduce((a, b) => (nameOf(b).length < nameOf(a).length ? b : a));
-      out.push({ rep, bpGuids: arr.map((b) => b.blueprint_record_guid), entityKey: key });
-    }
-    return out;
-  }
-
-  /** Collapse #2 — group Craftables into per-model bundles / base-titled leaves. */
+  /** Collapse #2 — group Craftables into per-model bundles / base-titled leaves.
+   *  (Collapse #1, the per-entity fold, is `collapseCraftables` in $lib/catalog.) */
   function bundleItems(items: BpView[]): GroupItem[] {
     const craftables = collapseCraftables(items);
     const byModel = new Map<string, Craftable[]>();
@@ -178,16 +162,6 @@
     return out;
   }
 
-  /** Strip the base prefix from a variant's display name. Returns
-   *  "Standard" for the variant whose name IS the base. */
-  function variantSuffix(fullName: string, baseName: string): string {
-    if (fullName === baseName) return "Standard";
-    if (fullName.startsWith(baseName)) {
-      return fullName.slice(baseName.length).trim() || "Standard";
-    }
-    return fullName;
-  }
-
   /** Format a craft time in seconds as a short human string. */
   function formatCraftTime(seconds: number | null): string {
     if (seconds == null || seconds <= 0) return "—";
@@ -209,9 +183,10 @@
   }
 
   onMount(async () => {
-    const [bpResult, ownedResult] = await Promise.all([
+    const [bpResult, ownedResult, wishResult] = await Promise.all([
       commands.listBlueprints(),
       commands.listOwned(),
+      commands.listWishlist(),
     ]);
     if (bpResult.status === "ok") {
       blueprints = bpResult.data;
@@ -221,6 +196,12 @@
     if (ownedResult.status === "ok") {
       owned.clear();
       for (const o of ownedResult.data) owned.add(o.blueprint_guid);
+    }
+    if (wishResult.status === "ok") {
+      wishRecipe.clear();
+      wishItem.clear();
+      for (const w of wishResult.data)
+        wishSet(w.intent).add(w.blueprint_guid);
     }
     loading = false;
   });
@@ -234,8 +215,12 @@
     const result = await commands.toggleOwned(guid);
     if (result.status === "ok") {
       // Server truth — only adjust if it disagrees with our optimistic flip.
-      if (result.data) owned.add(guid);
-      else owned.delete(guid);
+      if (result.data) {
+        owned.add(guid);
+        // Owning clears want-blueprint server-side (see add_owned); mirror
+        // it locally so the count/filter update without a refetch.
+        wishRecipe.delete(guid);
+      } else owned.delete(guid);
     } else {
       // Revert.
       if (wasOwned) owned.add(guid);
@@ -244,22 +229,49 @@
     }
   }
 
+  /** Optimistic flip of one wishlist intent for one BP record. */
+  async function toggleWishlist(guid: string, intent: WishIntent) {
+    const set = wishSet(intent);
+    const wasWanted = set.has(guid);
+    if (wasWanted) set.delete(guid);
+    else set.add(guid);
+
+    const result = await commands.toggleWishlist(guid, intent);
+    if (result.status === "ok") {
+      if (result.data) set.add(guid);
+      else set.delete(guid);
+    } else {
+      if (wasWanted) set.add(guid);
+      else set.delete(guid);
+      errorMessage = `${result.error.kind}: ${result.error.message}`;
+    }
+  }
+
   const ownedCount = $derived(
     blueprints.filter((b) => owned.has(b.blueprint_record_guid)).length,
+  );
+
+  const wantBpCount = $derived(
+    blueprints.filter((b) => wishRecipe.has(b.blueprint_record_guid)).length,
+  );
+  const wantItemCount = $derived(
+    blueprints.filter((b) => wishItem.has(b.blueprint_record_guid)).length,
   );
 
   const filtered = $derived.by(() => {
     const q = query.toLowerCase().trim();
     return blueprints.filter((bp) => {
-      const isOwned = owned.has(bp.blueprint_record_guid);
+      const guid = bp.blueprint_record_guid;
+      const isOwned = owned.has(guid);
       if (filter === "owned" && !isOwned) return false;
       if (filter === "unowned" && isOwned) return false;
+      if (filter === "wantbp" && !wishRecipe.has(guid)) return false;
+      if (filter === "wantitem" && !wishItem.has(guid)) return false;
       if (q) {
         const name = bp.display_name?.toLowerCase() ?? "";
-        const guid = bp.blueprint_record_guid.toLowerCase();
         const cat = categoryFor(bp.category_raw, bp.item_type, bp.item_sub_type);
         const catText = `${cat.main} ${cat.sub}`.toLowerCase();
-        if (!(name.includes(q) || guid.includes(q) || catText.includes(q)))
+        if (!(name.includes(q) || guid.toLowerCase().includes(q) || catText.includes(q)))
           return false;
       }
       return true;
@@ -355,10 +367,29 @@
     return n;
   }
 
-  const filters: { id: Filter; label: string }[] = [
+  /** A craftable is wishlisted (for an intent) if ANY of its BPs is. */
+  function craftableWishes(c: Craftable, intent: WishIntent): boolean {
+    const set = wishSet(intent);
+    for (const g of c.bpGuids) if (set.has(g)) return true;
+    return false;
+  }
+
+  /** Toggle a wishlist intent for a craftable, entity-level (all-or-nothing),
+   *  mirroring ownership — the interchangeable BPs are indistinguishable to
+   *  the user, so wanting "this item" wants every BP that crafts it. */
+  async function toggleCraftableWish(c: Craftable, intent: WishIntent) {
+    const set = wishSet(intent);
+    const wantedGuids = c.bpGuids.filter((g) => set.has(g));
+    const targets = wantedGuids.length > 0 ? wantedGuids : c.bpGuids;
+    for (const g of targets) await toggleWishlist(g, intent);
+  }
+
+  const filters: { id: Filter; label: string; icon?: string }[] = [
     { id: "all", label: "All" },
     { id: "owned", label: "Owned" },
     { id: "unowned", label: "Unowned" },
+    { id: "wantbp", label: "Want BP", icon: "⚐" },
+    { id: "wantitem", label: "Want item", icon: "♡" },
   ];
 </script>
 
@@ -398,16 +429,18 @@
     <div class="chips">
       {#each filters as f (f.id)}
         <button class="chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>
+          {#if f.icon}<span class="chip-icon" aria-hidden="true">{f.icon}</span>{/if}
           {f.label}
           {#if f.id === "owned"}<span class="chip-n">{ownedCount}</span>{/if}
+          {#if f.id === "wantbp"}<span class="chip-n">{wantBpCount}</span>{/if}
+          {#if f.id === "wantitem"}<span class="chip-n">{wantItemCount}</span>{/if}
         </button>
       {/each}
     </div>
     <div class="legend">
       <span class="legend-item"><span class="legend-icon own">✓</span> own BP</span>
-      <span class="legend-item soon-legend" title="Wishlist arrives in a later version">
-        <span class="legend-icon">⚐</span> / <span class="legend-icon">♡</span> wishlist · soon
-      </span>
+      <span class="legend-item"><span class="legend-icon wish">⚐</span> want BP</span>
+      <span class="legend-item"><span class="legend-icon wish">♡</span> want item</span>
     </div>
   </div>
 
@@ -465,14 +498,27 @@
                         {/if}
                       </button>
 
-                      <!-- Wishlist intents — present but disabled until Stage 7. -->
+                      <!-- Wishlist: ⚐ want the blueprint (only while unowned —
+                           owning it means you have the recipe), ♡ want a
+                           crafted copy (regardless of ownership). -->
                       <div class="wish-group">
                         {#if !isOwned}
-                          <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                          {@const wantBp = craftableWishes(c, "recipe")}
+                          <button
+                            class="wish"
+                            class:on={wantBp}
+                            title={wantBp ? "Remove blueprint from wishlist" : "Want blueprint (acquire via mission rewards)"}
+                            onclick={() => toggleCraftableWish(c, "recipe")}
+                          >⚐</button>
                         {:else}
-                          <span class="wish placeholder-slot">·</span>
+                          <span class="wish placeholder-slot" title="Blueprint owned">·</span>
                         {/if}
-                        <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                        <button
+                          class="wish"
+                          class:on={craftableWishes(c, "item")}
+                          title={craftableWishes(c, "item") ? "Remove item from wishlist" : "Want a crafted copy of this item"}
+                          onclick={() => toggleCraftableWish(c, "item")}
+                        >♡</button>
                       </div>
                     </div>
 
@@ -576,11 +622,22 @@
                               <span class="bp-guid">{vc.rep.blueprint_record_guid}</span>
                               <div class="wish-group">
                                 {#if !vOwned}
-                                  <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                                  {@const vWantBp = craftableWishes(vc, "recipe")}
+                                  <button
+                                    class="wish"
+                                    class:on={vWantBp}
+                                    title={vWantBp ? "Remove blueprint from wishlist" : "Want blueprint (acquire via mission rewards)"}
+                                    onclick={() => toggleCraftableWish(vc, "recipe")}
+                                  >⚐</button>
                                 {:else}
-                                  <span class="wish placeholder-slot">·</span>
+                                  <span class="wish placeholder-slot" title="Blueprint owned">·</span>
                                 {/if}
-                                <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                                <button
+                                  class="wish"
+                                  class:on={craftableWishes(vc, "item")}
+                                  title={craftableWishes(vc, "item") ? "Remove item from wishlist" : "Want a crafted copy of this item"}
+                                  onclick={() => toggleCraftableWish(vc, "item")}
+                                >♡</button>
                               </div>
                             </div>
                           {/each}
@@ -686,6 +743,10 @@
     border-color: var(--ember-dim);
     color: var(--ember);
   }
+  .chip-icon {
+    font-size: 0.9rem;
+    line-height: 1;
+  }
   .chip-n {
     font-size: 0.68rem;
     opacity: 0.8;
@@ -709,8 +770,8 @@
   .legend-icon.own {
     color: var(--ember);
   }
-  .soon-legend {
-    cursor: help;
+  .legend-icon.wish {
+    color: var(--muted);
   }
 
   .catalog {
@@ -901,16 +962,28 @@
     align-items: center;
     gap: 0.1rem;
   }
+  /* Wishlist toggles — ⚐ want-blueprint, ♡ want-item. Button reset; faint
+     until active, ember when on. */
+  button.wish {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
   .wish {
     font-size: 1.05rem;
     line-height: 1;
     padding: 0.25rem 0.3rem;
     color: var(--faint);
+    transition: color 90ms, transform 90ms;
   }
-  .wish.soon {
-    opacity: 0.35;
-    cursor: not-allowed;
+  button.wish:hover {
+    color: var(--muted);
+    transform: scale(1.12);
   }
+  button.wish.on {
+    color: var(--ember);
+  }
+  /* Keeps the ♡ aligned when the ⚐ slot is suppressed (BP owned). */
   .wish.placeholder-slot {
     opacity: 0.3;
   }

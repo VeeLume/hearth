@@ -15,7 +15,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use hearth_core::{Account, OwnedBlueprint, Platform, RecordId, WishlistEntry};
+use hearth_core::{Account, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry};
 use sqlx::{Pool, Sqlite, sqlite::SqlitePoolOptions};
 
 /// Concrete connection-pool type used across the storage API.
@@ -204,6 +204,12 @@ pub async fn add_owned(
     scope: Scope,
     blueprint_guid: &str,
 ) -> Result<OwnedBlueprint> {
+    // Domain invariant: owning a BP makes "want the blueprint" moot, so
+    // clear any recipe-intent wishlist entry for it. Done unconditionally
+    // (even on the idempotent already-owned path) so an inconsistent
+    // owned+want-recipe state self-heals. The `item` intent is untouched —
+    // you can own the BP and still want a crafted copy.
+    remove_from_wishlist(pool, scope, blueprint_guid, WishIntent::Recipe).await?;
     if let Some(existing) = get_owned(pool, scope, blueprint_guid).await? {
         return Ok(existing);
     }
@@ -297,18 +303,20 @@ pub async fn add_to_wishlist(
     pool: &DbPool,
     scope: Scope,
     blueprint_guid: &str,
+    intent: WishIntent,
 ) -> Result<WishlistEntry> {
-    if let Some(existing) = get_wishlist_entry(pool, scope, blueprint_guid).await? {
+    if let Some(existing) = get_wishlist_entry(pool, scope, blueprint_guid, intent).await? {
         return Ok(existing);
     }
     let id = RecordId::new_v7();
     let added_at = Utc::now();
     sqlx::query(
-        "INSERT INTO wishlist_entries (id, blueprint_guid, platform_id, account_id, added_at) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO wishlist_entries (id, blueprint_guid, intent, platform_id, account_id, added_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(blueprint_guid)
+    .bind(intent.as_str())
     .bind(scope.platform.as_str())
     .bind(scope.account_id.to_string())
     .bind(added_at.to_rfc3339())
@@ -318,6 +326,7 @@ pub async fn add_to_wishlist(
     Ok(WishlistEntry {
         id,
         blueprint_guid: blueprint_guid.to_string(),
+        intent,
         platform: scope.platform,
         account_id: scope.account_id,
         added_at,
@@ -328,12 +337,14 @@ pub async fn remove_from_wishlist(
     pool: &DbPool,
     scope: Scope,
     blueprint_guid: &str,
+    intent: WishIntent,
 ) -> Result<bool> {
     let result = sqlx::query(
         "DELETE FROM wishlist_entries \
-         WHERE blueprint_guid = ? AND platform_id = ? AND account_id = ?",
+         WHERE blueprint_guid = ? AND intent = ? AND platform_id = ? AND account_id = ?",
     )
     .bind(blueprint_guid)
+    .bind(intent.as_str())
     .bind(scope.platform.as_str())
     .bind(scope.account_id.to_string())
     .execute(pool)
@@ -346,12 +357,14 @@ pub async fn get_wishlist_entry(
     pool: &DbPool,
     scope: Scope,
     blueprint_guid: &str,
+    intent: WishIntent,
 ) -> Result<Option<WishlistEntry>> {
-    let row: Option<OwnedRow> = sqlx::query_as(
-        "SELECT id, blueprint_guid, platform_id, account_id, added_at FROM wishlist_entries \
-         WHERE blueprint_guid = ? AND platform_id = ? AND account_id = ?",
+    let row: Option<WishlistRow> = sqlx::query_as(
+        "SELECT id, blueprint_guid, intent, platform_id, account_id, added_at FROM wishlist_entries \
+         WHERE blueprint_guid = ? AND intent = ? AND platform_id = ? AND account_id = ?",
     )
     .bind(blueprint_guid)
+    .bind(intent.as_str())
     .bind(scope.platform.as_str())
     .bind(scope.account_id.to_string())
     .fetch_optional(pool)
@@ -361,8 +374,8 @@ pub async fn get_wishlist_entry(
 }
 
 pub async fn list_wishlist(pool: &DbPool, scope: Scope) -> Result<Vec<WishlistEntry>> {
-    let rows: Vec<OwnedRow> = sqlx::query_as(
-        "SELECT id, blueprint_guid, platform_id, account_id, added_at FROM wishlist_entries \
+    let rows: Vec<WishlistRow> = sqlx::query_as(
+        "SELECT id, blueprint_guid, intent, platform_id, account_id, added_at FROM wishlist_entries \
          WHERE platform_id = ? AND account_id = ? ORDER BY added_at",
     )
     .bind(scope.platform.as_str())
@@ -373,11 +386,15 @@ pub async fn list_wishlist(pool: &DbPool, scope: Scope) -> Result<Vec<WishlistEn
     rows.into_iter().map(row_to_wishlist).collect()
 }
 
-fn row_to_wishlist(row: OwnedRow) -> Result<WishlistEntry> {
-    let (id, blueprint_guid, platform_id, account_id, added_at) = row;
+type WishlistRow = (String, String, String, String, String, String);
+
+fn row_to_wishlist(row: WishlistRow) -> Result<WishlistEntry> {
+    let (id, blueprint_guid, intent, platform_id, account_id, added_at) = row;
     Ok(WishlistEntry {
         id: RecordId(id.parse().context("parsing record id")?),
         blueprint_guid,
+        intent: WishIntent::from_str(&intent)
+            .with_context(|| format!("unknown wishlist intent {intent:?}"))?,
         platform: Platform::from_str(&platform_id)
             .with_context(|| format!("unknown platform_id {platform_id:?}"))?,
         account_id: RecordId(account_id.parse().context("parsing account_id")?),
@@ -499,10 +516,88 @@ mod tests {
         let a = account(&pool, "VeeLume").await;
         let s = scope(&a, Platform::Prod);
 
-        let entry = add_to_wishlist(&pool, s, "want-1").await.unwrap();
+        let entry = add_to_wishlist(&pool, s, "want-1", WishIntent::Recipe)
+            .await
+            .unwrap();
         assert_eq!(entry.blueprint_guid, "want-1");
+        assert_eq!(entry.intent, WishIntent::Recipe);
         assert_eq!(list_wishlist(&pool, s).await.unwrap().len(), 1);
-        assert!(remove_from_wishlist(&pool, s, "want-1").await.unwrap());
+
+        // Idempotent within (bp, intent).
+        let again = add_to_wishlist(&pool, s, "want-1", WishIntent::Recipe)
+            .await
+            .unwrap();
+        assert_eq!(again.id, entry.id);
+
+        assert!(
+            remove_from_wishlist(&pool, s, "want-1", WishIntent::Recipe)
+                .await
+                .unwrap()
+        );
         assert!(list_wishlist(&pool, s).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn wishlist_intents_independent() {
+        // The two intents coexist as separate rows for one BP.
+        let pool = open_in_memory().await.unwrap();
+        let a = account(&pool, "VeeLume").await;
+        let s = scope(&a, Platform::Prod);
+
+        add_to_wishlist(&pool, s, "bp", WishIntent::Recipe)
+            .await
+            .unwrap();
+        add_to_wishlist(&pool, s, "bp", WishIntent::Item)
+            .await
+            .unwrap();
+        assert_eq!(list_wishlist(&pool, s).await.unwrap().len(), 2);
+
+        // Removing one intent leaves the other.
+        remove_from_wishlist(&pool, s, "bp", WishIntent::Recipe)
+            .await
+            .unwrap();
+        assert!(
+            get_wishlist_entry(&pool, s, "bp", WishIntent::Recipe)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_wishlist_entry(&pool, s, "bp", WishIntent::Item)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn owning_clears_want_blueprint() {
+        // Owning a BP clears the recipe-intent wishlist (moot once owned)
+        // but leaves the item intent (you can own the BP and still want a
+        // crafted copy).
+        let pool = open_in_memory().await.unwrap();
+        let a = account(&pool, "VeeLume").await;
+        let s = scope(&a, Platform::Prod);
+
+        add_to_wishlist(&pool, s, "bp", WishIntent::Recipe)
+            .await
+            .unwrap();
+        add_to_wishlist(&pool, s, "bp", WishIntent::Item)
+            .await
+            .unwrap();
+
+        add_owned(&pool, s, "bp").await.unwrap();
+        assert!(
+            get_wishlist_entry(&pool, s, "bp", WishIntent::Recipe)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_wishlist_entry(&pool, s, "bp", WishIntent::Item)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

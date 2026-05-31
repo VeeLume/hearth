@@ -62,11 +62,13 @@ CREATE TABLE mission_rewards_collected (
 CREATE TABLE wishlist_entries (
     id              TEXT PRIMARY KEY,
     blueprint_guid  TEXT NOT NULL,
+    intent          TEXT NOT NULL,                -- 'recipe' (want BP) or 'item' (want crafted item)
     platform_id     TEXT NOT NULL,
     account_id      TEXT NOT NULL
         REFERENCES accounts(id) ON DELETE CASCADE,
     added_at        TEXT NOT NULL,
-    UNIQUE(blueprint_guid, platform_id, account_id)
+    -- Both intents coexist for one BP, so intent is part of the key.
+    UNIQUE(blueprint_guid, intent, platform_id, account_id)
 );
 
 CREATE INDEX idx_wishlist_entries_scope

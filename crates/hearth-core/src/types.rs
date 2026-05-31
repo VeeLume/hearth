@@ -148,11 +148,54 @@ pub struct MissionCompletion {
     pub rewards_collected: Vec<String>,
 }
 
-/// A blueprint the user wants. Surfaces in lists / craft suggestions.
+/// What a wishlist entry expresses. A blueprint↔item is 1:1, but "I want
+/// this" is ambiguous between wanting the recipe and wanting a crafted
+/// copy — two independent goals a single BP can carry at once.
+///
+/// Storage form is the lowercase string (`'recipe'` / `'item'`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum WishIntent {
+    /// Want the blueprint/recipe itself — the capability to craft it
+    /// (collector goal, or a prerequisite). Only meaningful while the BP
+    /// is *unowned* (owning it means you already have the recipe).
+    /// Fulfilled by mission rewards.
+    Recipe,
+    /// Want a crafted copy of the item in hand. Meaningful regardless of
+    /// ownership (own the BP → craft it; don't → learn it first).
+    /// Fulfilled by crafting (self, v1.5) or community (v2).
+    Item,
+}
+
+impl WishIntent {
+    /// Storage representation — also the serde rename.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recipe => "recipe",
+            Self::Item => "item",
+        }
+    }
+
+    /// Parse from the storage form. `Option` (not `FromStr`) so an unknown
+    /// value is a soft failure at the row-mapping boundary.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "recipe" => Some(Self::Recipe),
+            "item" => Some(Self::Item),
+            _ => None,
+        }
+    }
+}
+
+/// A blueprint↔item the user wants, carrying a single [`WishIntent`].
+/// Unique by `(blueprint_guid, intent, platform, account_id)` — the two
+/// intents coexist as separate rows for one BP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct WishlistEntry {
     pub id: RecordId,
     pub blueprint_guid: String,
+    pub intent: WishIntent,
     pub platform: Platform,
     /// FK to `accounts.id`.
     pub account_id: RecordId,

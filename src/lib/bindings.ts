@@ -57,17 +57,14 @@ async listWishlist() : Promise<Result<WishlistEntry[], AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async addToWishlist(blueprintGuid: string) : Promise<Result<WishlistEntry, AppError>> {
+/**
+ * Flip one wishlist intent for a blueprint in the active scope. The two
+ * intents (`Recipe` = want the BP, `Item` = want a crafted copy) toggle
+ * independently. Returns the new state (`true` = now wanted).
+ */
+async toggleWishlist(blueprintGuid: string, intent: WishIntent) : Promise<Result<boolean, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("add_to_wishlist", { blueprintGuid }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async removeFromWishlist(blueprintGuid: string) : Promise<Result<boolean, AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("remove_from_wishlist", { blueprintGuid }) };
+    return { status: "ok", data: await TAURI_INVOKE("toggle_wishlist", { blueprintGuid, intent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -360,9 +357,32 @@ ingredients: Ingredient[] }
  */
 export type RecordId = string
 /**
- * A blueprint the user wants. Surfaces in lists / craft suggestions.
+ * What a wishlist entry expresses. A blueprint↔item is 1:1, but "I want
+ * this" is ambiguous between wanting the recipe and wanting a crafted
+ * copy — two independent goals a single BP can carry at once.
+ * 
+ * Storage form is the lowercase string (`'recipe'` / `'item'`).
  */
-export type WishlistEntry = { id: RecordId; blueprint_guid: string; platform: Platform; 
+export type WishIntent = 
+/**
+ * Want the blueprint/recipe itself — the capability to craft it
+ * (collector goal, or a prerequisite). Only meaningful while the BP
+ * is *unowned* (owning it means you already have the recipe).
+ * Fulfilled by mission rewards.
+ */
+"recipe" | 
+/**
+ * Want a crafted copy of the item in hand. Meaningful regardless of
+ * ownership (own the BP → craft it; don't → learn it first).
+ * Fulfilled by crafting (self, v1.5) or community (v2).
+ */
+"item"
+/**
+ * A blueprint↔item the user wants, carrying a single [`WishIntent`].
+ * Unique by `(blueprint_guid, intent, platform, account_id)` — the two
+ * intents coexist as separate rows for one BP.
+ */
+export type WishlistEntry = { id: RecordId; blueprint_guid: string; intent: WishIntent; platform: Platform; 
 /**
  * FK to `accounts.id`.
  */
