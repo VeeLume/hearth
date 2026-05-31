@@ -23,7 +23,8 @@
 use std::path::PathBuf;
 
 use hearth_core::{
-    Account, BpView, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry,
+    Account, BpView, MissionCompletion, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent,
+    WishlistEntry,
 };
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -274,6 +275,80 @@ async fn toggle_wishlist(
     }
 }
 
+// ── Mission tracking ──────────────────────────────────────────────────────────
+
+/// Every mission completion in the active scope, each carrying the
+/// `blueprint_guid`s of the non-repeatable BP rewards collected.
+#[tauri::command]
+#[specta::specta]
+async fn list_mission_completions(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MissionCompletion>, AppError> {
+    let scope = state.active_scope().await?;
+    let db = state.db().await?;
+    hearth_storage::list_mission_completions(db, scope)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))
+}
+
+/// Flip a mission's completed state in the active scope. Returns the new
+/// state (`true` = now completed). Un-completing cascades its collected
+/// rewards away.
+#[tauri::command]
+#[specta::specta]
+async fn toggle_mission_completed(
+    state: tauri::State<'_, AppState>,
+    mission_id: String,
+) -> Result<bool, AppError> {
+    let scope = state.active_scope().await?;
+    let db = state.db().await?;
+    let completed = hearth_storage::get_mission_completion(db, scope, &mission_id)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .is_some();
+    if completed {
+        hearth_storage::remove_mission_completion(db, scope, &mission_id)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(false)
+    } else {
+        hearth_storage::add_mission_completion(db, scope, &mission_id)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(true)
+    }
+}
+
+/// Flip whether a specific BP reward was collected for a mission. Collecting
+/// a reward implies the mission is done, so this ensures the completion row
+/// exists first. Returns the new collected state (`true` = now collected).
+#[tauri::command]
+#[specta::specta]
+async fn toggle_reward_collected(
+    state: tauri::State<'_, AppState>,
+    mission_id: String,
+    blueprint_guid: String,
+) -> Result<bool, AppError> {
+    let scope = state.active_scope().await?;
+    let db = state.db().await?;
+    // Ensure the mission is marked completed (collecting a reward implies it).
+    let completion = hearth_storage::add_mission_completion(db, scope, &mission_id)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    let already = completion.rewards_collected.iter().any(|g| g == &blueprint_guid);
+    if already {
+        hearth_storage::remove_reward_collected(db, completion.id, &blueprint_guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(false)
+    } else {
+        hearth_storage::add_reward_collected(db, completion.id, &blueprint_guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        Ok(true)
+    }
+}
+
 /// Surface the active platform + channel + account so the UI can show
 /// "PU · LIVE · @VeeLume" or similar. Fast — needs only discovery + db,
 /// not the catalog, so the sidebar renders without waiting on the DCB
@@ -391,6 +466,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         toggle_owned,
         list_wishlist,
         toggle_wishlist,
+        list_mission_completions,
+        toggle_mission_completed,
+        toggle_reward_collected,
         active_scope,
         list_accounts,
         verify_account,
