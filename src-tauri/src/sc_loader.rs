@@ -84,7 +84,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 8;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 9;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -409,7 +409,11 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     let paths = RecordPaths::build(datacore);
     let categories = Categories::build(&paths);
     let tags = Tags::build(datacore.records());
-    let families = ItemFamilies::build(&items, &tags, datacore.records());
+    // ItemFamilies now uses entity record name stems as a secondary
+    // signal (replacing the old SItemDefinition.tags fallback that
+    // over-grouped armor via the SM_RestrictedArm marker), so the
+    // build takes &RecordPaths to read entity record names.
+    let families = ItemFamilies::build(&items, &tags, datacore.records(), &paths);
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
