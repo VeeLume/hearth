@@ -8,17 +8,116 @@
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let query = $state("");
-  // Set of blueprint_record_guids whose row is currently expanded
-  // (recipe panel visible). Multiple can be open at once.
+  // Set of expansion keys whose row is currently expanded (recipe
+  // panel + variant list visible). For leaf rows the key is the
+  // blueprint_record_guid; for variant bundles it's a stable composite
+  // (`bundle:<sorted-joined-guids>`). Multiple can be open at once.
   let expanded = $state<Set<string>>(new Set());
 
   type Filter = "all" | "owned" | "unowned";
   let filter = $state<Filter>("all");
 
-  function toggleExpanded(guid: string) {
+  function toggleExpanded(key: string) {
     const next = new Set(expanded);
-    next.has(guid) ? next.delete(guid) : next.add(guid);
+    next.has(key) ? next.delete(key) : next.add(key);
     expanded = next;
+  }
+
+  // ─── Variant bundling ─────────────────────────────────────────────
+  // CIG currently ships every armour skin / weapon paint as its own
+  // blueprint with an identical recipe to the base item. We group BPs
+  // within a subcategory by their exact recipe signature; same-recipe
+  // groups of 2+ render as a single collapsible "Geist Armor Arms · 4/7"
+  // row with the per-variant ownership checkmarks behind expansion.
+  // Singleton groups (BPs with unique recipes) render as a standalone
+  // row, same as today.
+
+  type Leaf = { kind: "leaf"; bp: BpView; sortName: string };
+  type Bundle = {
+    kind: "bundle";
+    /** Shortest display name in the bundle — typically the un-skinned base. */
+    baseName: string;
+    /** Members sorted by name length (shortest first → base on top). */
+    bps: BpView[];
+    /** Sort key for the parent list (== baseName). */
+    sortName: string;
+    /** Stable expand-set key, independent of render order. */
+    expandKey: string;
+    /** Shared recipe (all bundle members have identical recipes). */
+    recipe: BpView["recipe"];
+  };
+  type GroupItem = Leaf | Bundle;
+
+  function recipeSignature(bp: BpView): string {
+    if (!bp.recipe || bp.recipe.ingredients.length === 0) return "";
+    const ings = [...bp.recipe.ingredients]
+      .map((i) => `${i.resource_guid}=${i.quantity_scu ?? "?"}q${i.min_quality}`)
+      .sort()
+      .join("|");
+    return `${bp.recipe.craft_time_seconds ?? "?"};${ings}`;
+  }
+
+  function bundleItems(items: BpView[]): GroupItem[] {
+    const bySignature = new Map<string, BpView[]>();
+    const singletons: BpView[] = []; // BPs with no usable recipe — never bundled
+    for (const bp of items) {
+      const sig = recipeSignature(bp);
+      if (!sig) {
+        singletons.push(bp);
+        continue;
+      }
+      const arr = bySignature.get(sig) ?? [];
+      arr.push(bp);
+      bySignature.set(sig, arr);
+    }
+
+    const out: GroupItem[] = [];
+    for (const arr of bySignature.values()) {
+      if (arr.length === 1) {
+        const bp = arr[0];
+        out.push({
+          kind: "leaf",
+          bp,
+          sortName: bp.display_name ?? bp.blueprint_record_guid,
+        });
+      } else {
+        const sorted = [...arr].sort((a, b) => {
+          const la = (a.display_name ?? a.blueprint_record_guid).length;
+          const lb = (b.display_name ?? b.blueprint_record_guid).length;
+          return la - lb || (a.display_name ?? "").localeCompare(b.display_name ?? "");
+        });
+        const baseName = sorted[0].display_name ?? sorted[0].blueprint_record_guid;
+        const expandKey =
+          "bundle:" + sorted.map((b) => b.blueprint_record_guid).slice().sort().join(",");
+        out.push({
+          kind: "bundle",
+          baseName,
+          bps: sorted,
+          sortName: baseName,
+          expandKey,
+          recipe: sorted[0].recipe,
+        });
+      }
+    }
+    for (const bp of singletons) {
+      out.push({
+        kind: "leaf",
+        bp,
+        sortName: bp.display_name ?? bp.blueprint_record_guid,
+      });
+    }
+    out.sort((a, b) => a.sortName.localeCompare(b.sortName));
+    return out;
+  }
+
+  /** Strip the base prefix from a variant's display name. Returns
+   *  "Standard" for the variant whose name IS the base. */
+  function variantSuffix(fullName: string, baseName: string): string {
+    if (fullName === baseName) return "Standard";
+    if (fullName.startsWith(baseName)) {
+      return fullName.slice(baseName.length).trim() || "Standard";
+    }
+    return fullName;
   }
 
   /** Format a craft time in seconds as a short human string. */
@@ -98,19 +197,28 @@
     });
   });
 
-  // Two-level grouping by friendly item-type taxonomy (not blueprint
-  // reward pool — pools are a mission-reward mechanic). categoryFor maps
-  // the raw BpView.item_type into a main + sub category.
-  type SubGroup = { sub: string; subOrder: number; items: BpView[] };
+  // Two-level grouping by sc-crafting Category (primary axis) and the
+  // AttachDef item_type / sub_type (secondary axis). Within each
+  // subgroup, BPs are bundled by recipe signature so skin variants
+  // (same recipe, different name) collapse to one row. See
+  // `bundleItems` above.
+  type SubGroup = { sub: string; subOrder: number; items: GroupItem[]; rawCount: number };
   type MainGroup = {
     main: string;
     mainOrder: number;
+    /** Raw blueprint count across all subgroups (NOT row count after
+     *  bundling — that's the user-visible row total, computed in the
+     *  template via subs.reduce). */
     total: number;
     subs: SubGroup[];
   };
 
   const grouped = $derived.by((): MainGroup[] => {
-    const mains = new Map<string, MainGroup & { subMap: Map<string, SubGroup> }>();
+    // Pass 1: accumulate raw BpViews per main/sub bucket.
+    type Pre = MainGroup & {
+      subMap: Map<string, { sub: string; subOrder: number; raw: BpView[] }>;
+    };
+    const mains = new Map<string, Pre>();
     for (const bp of filtered) {
       const cat = categoryFor(bp.category_raw, bp.item_type, bp.item_sub_type);
       let main = mains.get(cat.main);
@@ -126,25 +234,38 @@
       }
       let sub = main.subMap.get(cat.sub);
       if (!sub) {
-        sub = { sub: cat.sub, subOrder: cat.subOrder, items: [] };
+        sub = { sub: cat.sub, subOrder: cat.subOrder, raw: [] };
         main.subMap.set(cat.sub, sub);
-        main.subs.push(sub);
       }
-      sub.items.push(bp);
+      sub.raw.push(bp);
       main.total += 1;
     }
-    const byName = (a: BpView, b: BpView) =>
-      (a.display_name ?? a.blueprint_record_guid).localeCompare(
-        b.display_name ?? b.blueprint_record_guid,
-      );
-    const out = [...mains.values()];
-    for (const m of out) {
-      for (const s of m.subs) s.items.sort(byName);
-      m.subs.sort((a, b) => a.subOrder - b.subOrder || a.sub.localeCompare(b.sub));
+
+    // Pass 2: bundle each subgroup, build final SubGroup shape.
+    const out: MainGroup[] = [];
+    for (const m of mains.values()) {
+      const subs: SubGroup[] = [];
+      for (const s of m.subMap.values()) {
+        subs.push({
+          sub: s.sub,
+          subOrder: s.subOrder,
+          items: bundleItems(s.raw),
+          rawCount: s.raw.length,
+        });
+      }
+      subs.sort((a, b) => a.subOrder - b.subOrder || a.sub.localeCompare(b.sub));
+      out.push({ main: m.main, mainOrder: m.mainOrder, total: m.total, subs });
     }
     out.sort((a, b) => a.mainOrder - b.mainOrder || a.main.localeCompare(b.main));
     return out;
   });
+
+  /** Owned-variant count for a bundle, reactive on `owned`. */
+  function bundleOwnedCount(b: Bundle): number {
+    let n = 0;
+    for (const bp of b.bps) if (owned.has(bp.blueprint_record_guid)) n++;
+    return n;
+  }
 
   const filters: { id: Filter; label: string }[] = [
     { id: "all", label: "All" },
@@ -218,51 +339,113 @@
               </div>
             {/if}
             <ul>
-              {#each subGroup.items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
-                {@const isOwned = owned.has(bp.blueprint_record_guid)}
-                {@const isExpanded = expanded.has(bp.blueprint_record_guid)}
-                <li class:owned={isOwned} class:expanded={isExpanded}>
-                  <div class="bp-row">
-                    <button
-                      class="own-toggle"
-                      class:on={isOwned}
-                      title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
-                      onclick={() => toggleOwned(bp.blueprint_record_guid)}
-                    >
-                      {isOwned ? "✓" : ""}
-                    </button>
-                    <button
-                      class="bp-expand"
-                      title={isExpanded ? "Hide recipe" : "Show recipe"}
-                      onclick={() => toggleExpanded(bp.blueprint_record_guid)}
-                    >
-                      <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
-                      <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
-                      {#if bp.display_name}
-                        <span class="bp-guid">{bp.blueprint_record_guid}</span>
-                      {/if}
-                      {#if bp.recipe?.craft_time_seconds}
-                        <span class="bp-time" title="Craft time">⏱ {formatCraftTime(bp.recipe.craft_time_seconds)}</span>
-                      {/if}
-                    </button>
+              {#each subGroup.items as item, i (item.kind === "leaf" ? item.bp.blueprint_record_guid : item.expandKey)}
+                {#if item.kind === "leaf"}
+                  {@const bp = item.bp}
+                  {@const isOwned = owned.has(bp.blueprint_record_guid)}
+                  {@const isExpanded = expanded.has(bp.blueprint_record_guid)}
+                  <li class:owned={isOwned} class:expanded={isExpanded}>
+                    <div class="bp-row">
+                      <button
+                        class="own-toggle"
+                        class:on={isOwned}
+                        title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
+                        onclick={() => toggleOwned(bp.blueprint_record_guid)}
+                      >
+                        {isOwned ? "✓" : ""}
+                      </button>
+                      <button
+                        class="bp-expand"
+                        title={isExpanded ? "Hide recipe" : "Show recipe"}
+                        onclick={() => toggleExpanded(bp.blueprint_record_guid)}
+                      >
+                        <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
+                        <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
+                        {#if bp.display_name}
+                          <span class="bp-guid">{bp.blueprint_record_guid}</span>
+                        {/if}
+                        {#if bp.recipe?.craft_time_seconds}
+                          <span class="bp-time" title="Craft time">⏱ {formatCraftTime(bp.recipe.craft_time_seconds)}</span>
+                        {/if}
+                      </button>
 
-                    <!-- Wishlist intents — present but disabled until Stage 7. -->
-                    <div class="wish-group">
-                      {#if !isOwned}
-                        <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
-                      {:else}
-                        <span class="wish placeholder-slot">·</span>
-                      {/if}
-                      <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                      <!-- Wishlist intents — present but disabled until Stage 7. -->
+                      <div class="wish-group">
+                        {#if !isOwned}
+                          <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                        {:else}
+                          <span class="wish placeholder-slot">·</span>
+                        {/if}
+                        <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                      </div>
                     </div>
-                  </div>
 
-                  {#if isExpanded}
-                    <div class="recipe-panel">
-                      {#if bp.recipe}
-                        {#if bp.recipe.ingredients.length > 0}
+                    {#if isExpanded}
+                      <div class="recipe-panel">
+                        {#if bp.recipe}
+                          {#if bp.recipe.ingredients.length > 0}
+                            <ul class="ingredients">
+                              {#each bp.recipe.ingredients as ing (ing.resource_guid)}
+                                <li class="ingredient">
+                                  <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
+                                  <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
+                                  {#if ing.min_quality > 0}
+                                    <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
+                                  {/if}
+                                </li>
+                              {/each}
+                            </ul>
+                          {:else}
+                            <span class="recipe-empty">Recipe has no listed ingredients.</span>
+                          {/if}
+                        {:else}
+                          <span class="recipe-empty">No recipe data for this blueprint.</span>
+                        {/if}
+                      </div>
+                    {/if}
+                  </li>
+                {:else}
+                  {@const bundle = item}
+                  {@const isExpanded = expanded.has(bundle.expandKey)}
+                  {@const ownedN = bundleOwnedCount(bundle)}
+                  {@const totalN = bundle.bps.length}
+                  {@const allOwned = ownedN === totalN}
+                  {@const someOwned = ownedN > 0}
+                  <li class:expanded={isExpanded} class:bundle-owned={allOwned} class:bundle-some={someOwned && !allOwned}>
+                    <div class="bp-row bundle-row">
+                      <!-- Variant count badge replaces the per-row checkmark.
+                           Ownership is per-variant; expand to manage. -->
+                      <span
+                        class="variant-count"
+                        class:full={allOwned}
+                        class:some={someOwned && !allOwned}
+                        title={`${ownedN} of ${totalN} variants owned`}
+                      >
+                        {ownedN}/{totalN}
+                      </span>
+                      <button
+                        class="bp-expand"
+                        title={isExpanded ? "Hide variants & recipe" : "Show variants & recipe"}
+                        onclick={() => toggleExpanded(bundle.expandKey)}
+                      >
+                        <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
+                        <span class="bp-name">{bundle.baseName}</span>
+                        <span class="bundle-tag" title="Same recipe across these variants">variants</span>
+                        {#if bundle.recipe?.craft_time_seconds}
+                          <span class="bp-time" title="Craft time (shared)">⏱ {formatCraftTime(bundle.recipe.craft_time_seconds)}</span>
+                        {/if}
+                      </button>
+                      <!-- Wishlist controls live per-variant inside the
+                           expansion; the parent row has no wishlist
+                           affordance. -->
+                      <div class="wish-group"></div>
+                    </div>
+
+                    {#if isExpanded}
+                      <div class="recipe-panel">
+                        {#if bundle.recipe && bundle.recipe.ingredients.length > 0}
                           <ul class="ingredients">
-                            {#each bp.recipe.ingredients as ing (ing.resource_guid)}
+                            {#each bundle.recipe.ingredients as ing (ing.resource_guid)}
                               <li class="ingredient">
                                 <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
                                 <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
@@ -272,15 +455,39 @@
                               </li>
                             {/each}
                           </ul>
-                        {:else}
-                          <span class="recipe-empty">Recipe has no listed ingredients.</span>
                         {/if}
-                      {:else}
-                        <span class="recipe-empty">No recipe data for this blueprint.</span>
-                      {/if}
-                    </div>
-                  {/if}
-                </li>
+                        <div class="variant-list">
+                          {#each bundle.bps as vbp (vbp.blueprint_record_guid)}
+                            {@const vOwned = owned.has(vbp.blueprint_record_guid)}
+                            {@const fullName = vbp.display_name ?? vbp.blueprint_record_guid}
+                            {@const suffix = variantSuffix(fullName, bundle.baseName)}
+                            {@const isBase = suffix === "Standard"}
+                            <div class="variant" class:owned={vOwned}>
+                              <button
+                                class="own-toggle"
+                                class:on={vOwned}
+                                title={vOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
+                                onclick={() => toggleOwned(vbp.blueprint_record_guid)}
+                              >
+                                {vOwned ? "✓" : ""}
+                              </button>
+                              <span class="variant-name" class:base={isBase}>{suffix}</span>
+                              <span class="bp-guid">{vbp.blueprint_record_guid}</span>
+                              <div class="wish-group">
+                                {#if !vOwned}
+                                  <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                                {:else}
+                                  <span class="wish placeholder-slot">·</span>
+                                {/if}
+                                <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                              </div>
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                  </li>
+                {/if}
               {/each}
             </ul>
           </div>
@@ -639,5 +846,99 @@
     font-size: 0.8rem;
     color: var(--faint);
     font-style: italic;
+  }
+
+  /* ── Variant bundles ── */
+  /* Parent row of a bundle (the "Geist Armor Arms · 4/7" header).
+     No own-toggle button — ownership is per-variant, behind expansion. */
+  .bundle-row .variant-count {
+    width: 2.4rem;
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.15rem 0.2rem;
+    font-weight: 500;
+  }
+  .bundle-row .variant-count.some {
+    color: var(--ember);
+    border-color: var(--ember-dim);
+  }
+  .bundle-row .variant-count.full {
+    color: #1a1209;
+    background: var(--ember);
+    border-color: var(--ember);
+    font-weight: 700;
+  }
+  /* "variants" pill on the parent row label. */
+  .bundle-tag {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  /* Tint the row when ownership is partial/complete across the bundle. */
+  li.bundle-some {
+    background: linear-gradient(90deg, var(--ember-glow), transparent 60%);
+    opacity: 0.97;
+  }
+  li.bundle-owned {
+    background: linear-gradient(90deg, var(--ember-glow), transparent 40%);
+  }
+
+  /* Per-variant rows inside an expanded bundle. */
+  .variant-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    margin-top: 0.45rem;
+    padding-top: 0.45rem;
+    border-top: 1px dashed var(--line);
+  }
+  .variant {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.25rem 0;
+    border-radius: 6px;
+  }
+  .variant:hover {
+    background: var(--panel-2);
+  }
+  .variant.owned {
+    background: linear-gradient(90deg, var(--ember-glow), transparent 50%);
+  }
+  .variant .own-toggle {
+    width: 1.2rem;
+    height: 1.2rem;
+    font-size: 0.7rem;
+  }
+  .variant-name {
+    flex: 1;
+    font-size: 0.85rem;
+    color: var(--text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .variant-name.base {
+    color: var(--muted);
+    font-style: italic;
+  }
+  .variant .bp-guid {
+    flex: 0 0 auto;
+  }
+  .variant .wish {
+    font-size: 0.95rem;
+    padding: 0.15rem 0.25rem;
   }
 </style>
