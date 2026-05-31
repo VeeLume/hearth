@@ -4,9 +4,57 @@
     <meta charset="utf-8" />
     <link rel="icon" href="data:," />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Pre-hydration shell. Applies before SvelteKit + Vite finish so
+         the WebView paints the brand instead of a blank frame during
+         the ~1-4s startup. +layout.svelte removes #boot-splash on
+         mount. The :root color tokens duplicate app.css/:root so the
+         shell renders before app.css loads. -->
+    <style>
+      :root {
+        --bg: #131316;
+        --text: #e8e8ea;
+        --muted: #8a8a95;
+        --ember: #e8915a;
+      }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", sans-serif;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        gap: 0.5rem;
+        z-index: 9999;
+        transition: opacity 200ms ease-out;
+      }
+      #boot-splash .flame {
+        font-size: 2.5rem;
+        line-height: 1;
+      }
+      #boot-splash .brand {
+        font-size: 0.78rem;
+        color: var(--muted);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+      #boot-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
+    <div id="boot-splash" aria-hidden="true">
+      <span class="flame">🔥</span>
+      <span class="brand">Hearth</span>
+    </div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

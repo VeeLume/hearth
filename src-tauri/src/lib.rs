@@ -1,13 +1,33 @@
 //! Tauri shell for Hearth.
+//!
+//! # Startup shape
+//!
+//! AppState splits the SC-load along the fast/slow seam, with each piece
+//! in its own OnceCell so concurrent readers don't serialize on a mutex
+//! and commands wait only on the data they actually need:
+//!
+//! - [`AppState::discovery`] — ~50ms. Install + handle + platform.
+//!   Required by the sidebar scope chip and all DB-only commands
+//!   (`list_owned`, `toggle_owned`, `active_scope`, …).
+//! - [`AppState::catalog`] — 0.15s warm / ~30s cold. The cooked
+//!   `Vec<BpView>`. Required only by `list_blueprints`.
+//! - [`AppState::db`] — independent SQLite pool, initialized on first
+//!   DB-touching command on Tauri's tokio runtime.
+//!
+//! `setup()` eagerly fires discovery + catalog + db on a background task
+//! so the OnceCells are warm by the time the WebView mounts and starts
+//! firing onMount IPC calls. Cold paths still pay their cost, but the
+//! UI can show identity and accept clicks while the catalog builds in
+//! the background.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishlistEntry};
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
+use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 
 pub mod error;
 pub mod identity;
@@ -15,20 +35,64 @@ pub mod sc_loader;
 pub mod sensors;
 
 use error::AppError;
-use sc_loader::LoadedScData;
+use sc_loader::Discovery;
 
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct AppState {
-    /// Cached SC reference data per platform (Prod / Ptu loaded
-    /// independently, lazily on first BP-catalog call).
-    sc_data: Mutex<HashMap<Platform, Box<LoadedScData>>>,
-    /// SQLite pool, lazily initialized on first DB-needing command on
-    /// Tauri's own tokio runtime.
+    /// Fast install/handle bundle. ~50ms first call; lock-free after.
+    /// Required for the sidebar scope chip and every DB-scoped command
+    /// (they need the platform + active account, both derived from
+    /// this).
+    discovery: OnceCell<Discovery>,
+    /// Cooked blueprint catalog. Loaded lazily via the snapshot
+    /// waterfall in `sc_loader::build_catalog`. Only `list_blueprints`
+    /// awaits this; other commands stay fast.
+    catalog: OnceCell<Vec<BpView>>,
+    /// SQLite pool, lazily initialized on first DB-needing command.
     db: OnceCell<DbPool>,
 }
 
 impl AppState {
+    fn new() -> Self {
+        Self {
+            discovery: OnceCell::new(),
+            catalog: OnceCell::new(),
+            db: OnceCell::new(),
+        }
+    }
+
+    /// Get the fast discovery bundle (install + handle + platform).
+    /// Initialized once on first call; subsequent calls are lock-free.
+    async fn discovery(&self) -> Result<&Discovery, AppError> {
+        self.discovery
+            .get_or_try_init(|| async {
+                sc_loader::discover()
+                    .await
+                    .map_err(|e| AppError::NoInstall(format!("{e:#}")))
+            })
+            .await
+    }
+
+    /// Get the cooked blueprint catalog. Awaits `discovery()` first to
+    /// know which install to parse, then runs the snapshot waterfall on
+    /// first call.
+    async fn catalog(&self) -> Result<&Vec<BpView>, AppError> {
+        // Pull the install out before initializing the catalog so the
+        // discovery borrow doesn't span the catalog init.
+        let install = {
+            let d = self.discovery().await?;
+            d.install.clone()
+        };
+        self.catalog
+            .get_or_try_init(|| async move {
+                sc_loader::build_catalog(install)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("{e:#}")))
+            })
+            .await
+    }
+
     async fn db(&self) -> Result<&DbPool, AppError> {
         self.db
             .get_or_try_init(|| async {
@@ -39,40 +103,25 @@ impl AppState {
             .await
     }
 
-    /// Load (if needed) the SC data for the highest-priority install,
-    /// returning a guard that holds the lock for the duration of the
-    /// caller's read. In Stage 2.5 only one platform is loaded eagerly;
-    /// Stage 3+ adds a channel switcher.
-    async fn loaded(&self) -> Result<LoadedRef<'_>, AppError> {
-        let mut guard = self.sc_data.lock().await;
-        if guard.is_empty() {
-            let loaded = LoadedScData::load_async()
-                .await
-                .map_err(|e| AppError::NoInstall(format!("{e:#}")))?;
-            guard.insert(loaded.platform, loaded);
-        }
-        Ok(LoadedRef { guard })
-    }
-
     /// Resolve the currently-active account, bootstrapping a row from
     /// the launcher store's handle if needed. Returns the live `Account`
-    /// row.
+    /// row. Fast — needs only discovery + db, not the catalog.
     ///
     /// Bootstrap rule: at first run the launcher store's `nickname` is
     /// the active account. If no `accounts` row matches, insert one.
     /// Stage 3+ adds a multi-account picker on top of this.
     async fn active_account(&self) -> Result<Account, AppError> {
-        let handle = {
-            let loaded = self.loaded().await?;
-            loaded
-                .data()
-                .handle
-                .clone()
-                .ok_or_else(|| AppError::Internal(
+        let handle = self
+            .discovery()
+            .await?
+            .handle
+            .clone()
+            .ok_or_else(|| {
+                AppError::Internal(
                     "no RSI handle available — launcher store identity could not be read"
                         .into(),
-                ))?
-        };
+                )
+            })?;
         let db = self.db().await?;
         hearth_storage::upsert_account_by_handle(db, &handle)
             .await
@@ -80,26 +129,9 @@ impl AppState {
     }
 
     async fn active_scope(&self) -> Result<Scope, AppError> {
-        let platform = {
-            let loaded = self.loaded().await?;
-            loaded.data().platform
-        };
+        let platform = self.discovery().await?.platform;
         let account = self.active_account().await?;
         Ok(Scope::new(platform, account.id))
-    }
-}
-
-/// RAII handle to one platform's loaded data. Drops the lock when out
-/// of scope.
-struct LoadedRef<'a> {
-    guard: tokio::sync::MutexGuard<'a, HashMap<Platform, Box<LoadedScData>>>,
-}
-
-impl LoadedRef<'_> {
-    fn data(&self) -> &LoadedScData {
-        // Stage 2.5: only one platform loaded at a time. Stage 3+
-        // stores an explicit "active platform" alongside the map.
-        self.guard.values().next().expect("loaded data present")
     }
 }
 
@@ -115,8 +147,7 @@ fn db_path() -> PathBuf {
 #[tauri::command]
 #[specta::specta]
 async fn list_blueprints(state: tauri::State<'_, AppState>) -> Result<Vec<BpView>, AppError> {
-    let loaded = state.loaded().await?;
-    Ok(loaded.data().blueprints())
+    Ok(state.catalog().await?.clone())
 }
 
 #[tauri::command]
@@ -221,14 +252,14 @@ async fn remove_from_wishlist(
 }
 
 /// Surface the active platform + channel + account so the UI can show
-/// "PU · LIVE · @VeeLume" or similar. Triggers the bootstrap if needed
-/// (loads SC data + inserts the account row if missing).
+/// "PU · LIVE · @VeeLume" or similar. Fast — needs only discovery + db,
+/// not the catalog, so the sidebar renders without waiting on the DCB
+/// parse.
 #[tauri::command]
 #[specta::specta]
 async fn active_scope(state: tauri::State<'_, AppState>) -> Result<ActiveScope, AppError> {
     let (platform, channel) = {
-        let loaded = state.loaded().await?;
-        let d = loaded.data();
+        let d = state.discovery().await?;
         (d.platform, d.channel.display_name().to_string())
     };
     let account = state.active_account().await?;
@@ -318,13 +349,29 @@ fn typescript_exporter() -> Typescript {
     Typescript::default().bigint(BigIntExportBehavior::Number)
 }
 
+/// Spawn the eager warmup: discovery, catalog, db all start filling
+/// their OnceCells in parallel. By the time the WebView hydrates and
+/// onMount fires (~1-4s later), the cells are likely already populated
+/// and the IPC calls return instantly. Failures here are silent —
+/// callers will hit the same errors on demand and report them through
+/// AppError.
+fn spawn_warmup(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        // Discovery first because catalog depends on it. Catalog + db
+        // can then run concurrently.
+        if state.discovery().await.is_ok() {
+            let _ = tokio::join!(state.catalog(), state.db());
+        } else {
+            // No install: at least try the DB so personal-state queries
+            // get a clean DB error instead of a slow no-pool wait.
+            let _ = state.db().await;
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let state = AppState {
-        sc_data: Mutex::new(HashMap::new()),
-        db: OnceCell::new(),
-    };
-
     let builder = ipc_builder();
 
     #[cfg(debug_assertions)]
@@ -333,8 +380,12 @@ pub fn run() {
         .expect("exporting TypeScript bindings");
 
     tauri::Builder::default()
-        .manage(state)
+        .manage(AppState::new())
         .invoke_handler(builder.invoke_handler())
+        .setup(|app| {
+            spawn_warmup(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("running tauri application");
 }

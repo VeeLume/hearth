@@ -1,12 +1,27 @@
-//! Loads SC reference data (the blueprint catalog) from the local game
-//! install, with a layered snapshot cache for fast subsequent loads.
+//! Loads SC reference data from the local game install in two stages
+//! along the natural fast/slow seam, with a layered snapshot cache for
+//! fast subsequent loads.
 //!
-//! # Load waterfall
+//! # Two stages, separated so the UI can show what's ready
+//!
+//! - [`discover`] — **fast** (~50ms): launcher-store reads. Finds the
+//!   highest-priority install, derives the [`Platform`], reads the RSI
+//!   handle. Everything the sidebar's scope chip needs to render. Wraps
+//!   the synchronous `sc_holotable::install::*` calls in `spawn_blocking`
+//!   so they don't stall the tokio runtime.
+//! - [`build_catalog`] — **slow** (0.15s warm → ~30s cold): the DCB-parse
+//!   waterfall described below. Returns the cooked `Vec<BpView>` for the
+//!   catalog UI. Takes the [`Installation`] from `discover` so it doesn't
+//!   redo discovery.
+//!
+//! AppState wires both as independent OnceCells, so callers wait only on
+//! the data they actually need: `list_owned` and `active_scope` get
+//! through in ~50ms; only `list_blueprints` waits on the catalog.
+//!
+//! # Catalog load waterfall (inside `build_catalog`)
 //!
 //! Each tier produces a `Vec<BpView>`; on success the cold tiers also
-//! persist a cache file the next session can load instead. The trade-off
-//! climbs: cheap-to-load + cheap-to-cache up top, expensive-to-build at
-//! the bottom.
+//! persist a cache file the next session can load instead.
 //!
 //! 1. **Processed snapshot** (`catalog.cook`) — load the cooked
 //!    `Vec<BpView>` directly via [`ProcessedSnapshot`]. Sub-second. No
@@ -21,7 +36,7 @@
 //! 3. **Live parse** — open the live `Data.p4k`, extract assets, parse
 //!    the DCB, build the catalog. Persist both `extract.snap` and
 //!    `catalog.cook` for next time. The cold path; the slow one.
-//! 4. **Error** — no usable install or live parse failed; bubble up.
+//! 4. **Error** — live parse failed; bubble up.
 //!
 //! Snapshot failures (missing file, version mismatch, staleness, decode
 //! error) are non-fatal: they log at info level and fall through to the
@@ -32,29 +47,19 @@
 //! patches within a channel). Atomic writes mean a crash mid-save can't
 //! leave a half-written file behind.
 //!
-//! # Channel + platform selection
-//!
-//! `sc_holotable::install::discover()` returns every installed channel
-//! sorted by `Channel::priority()` (Live → Hotfix → PTU → EPTU →
-//! TechPreview). We pick the first — the most-stable available install.
-//!
-//! The chosen install's `platform_id` (`'prod'` vs `'ptu'`) comes
-//! straight from the launcher store (since sc-holotable v0.6) and gets
-//! recorded on the loaded data so personal-state writes are scoped
-//! correctly. If launcher-store fallback fired (log parsing),
-//! `platform_id` is `None`; we derive it from the channel as a fallback.
-//!
 //! # Stack-size workaround (Windows)
 //!
 //! sc-extract-generated's `record_store` decoder has match arms deep
 //! enough to overflow the default thread stack on Windows. Pattern
 //! lifted from sc-langpatch / bulkhead:
 //!
-//! 1. Run `load_inner` on a dedicated `std::thread` with an explicit
-//!    32 MiB stack (matches bulkhead's `LOADER_STACK_SIZE`).
-//! 2. Return `Box<LoadedScData>` through the bridge — boxing on the
-//!    loader thread means only an 8-byte pointer crosses the mpsc
-//!    channel into the (small-stack) tokio blocking receiver.
+//! 1. Run the catalog build on a dedicated `std::thread` with an
+//!    explicit 32 MiB stack (matches bulkhead's `LOADER_STACK_SIZE`).
+//! 2. Return only `Vec<BpView>` through the bridge — owned data, no
+//!    boxing tricks needed (the heavy `Datacore` lives only inside the
+//!    loader thread and gets dropped before sending).
+//!
+//! `discover` does *not* need the big stack — it never touches the DCB.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -82,7 +87,10 @@ const HEARTH_CATALOG_COOK_VERSION: u32 = 1;
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
 
-pub struct LoadedScData {
+/// Everything the sidebar / scope chip / DB-only commands need before
+/// the heavy DCB parse starts. Produced by [`discover`] in ~50ms.
+#[derive(Debug, Clone)]
+pub struct Discovery {
     /// Specific channel that produced this dataset (Live, Hotfix, …).
     pub channel: Channel,
     /// Stability grouping. `Prod` (Live + Hotfix) or `Ptu` (PTU, EPTU,
@@ -93,121 +101,136 @@ pub struct LoadedScData {
     /// launcher store couldn't be read or the identity block was empty
     /// (e.g. user has never signed into the launcher).
     pub handle: Option<String>,
-    /// Pre-computed BP catalog.
-    blueprints: Vec<BpView>,
+    /// The chosen install. Held so [`build_catalog`] doesn't redo
+    /// discovery, and so future stages (sensors / Game.log tailing) can
+    /// resolve paths off it.
+    pub install: Installation,
 }
 
-impl LoadedScData {
-    /// Spawn a dedicated 32 MiB-stack thread, load on it, return a
-    /// `Box<Self>` via mpsc. See module docs for the stack rationale.
-    pub async fn load_async() -> Result<Box<Self>> {
-        let (tx, rx) = mpsc::channel::<Result<Box<Self>>>();
-        std::thread::Builder::new()
-            .name("hearth-sc-loader".into())
-            .stack_size(LOADER_STACK_SIZE)
-            .spawn(move || {
-                let _ = tx.send(Self::load_inner().map(Box::new));
-            })
-            .context("spawning sc-loader thread")?;
-        tokio::task::spawn_blocking(move || rx.recv())
-            .await
-            .context("joining sc-loader bridge task")?
-            .map_err(|_| anyhow::anyhow!("sc-loader sender dropped"))?
+/// Find the highest-priority install, derive its [`Platform`], read the
+/// launcher-store identity. Runs the synchronous launcher reads via
+/// `spawn_blocking` so the tokio runtime stays responsive.
+pub async fn discover() -> Result<Discovery> {
+    tokio::task::spawn_blocking(discover_blocking)
+        .await
+        .context("joining discovery task")?
+}
+
+fn discover_blocking() -> Result<Discovery> {
+    let start = Instant::now();
+    let mut installs = sc_holotable::install::discover().context("sc discovery")?;
+    if installs.is_empty() {
+        anyhow::bail!("no Star Citizen installations detected");
     }
+    installs.sort_by_key(|i| i.channel.priority());
+    let install = installs.into_iter().next().expect("non-empty");
+    let channel = install.channel;
+    let platform = install
+        .platform_id
+        .as_deref()
+        .and_then(Platform::from_str)
+        .unwrap_or_else(|| group_for(channel));
 
-    pub fn load_inner() -> Result<Self> {
-        let start = Instant::now();
-
-        let mut installs = sc_holotable::install::discover().context("sc discovery")?;
-        if installs.is_empty() {
-            anyhow::bail!("no Star Citizen installations detected");
+    // Best-effort handle read. Failure here is logged but not fatal —
+    // identity is bootstrapped from the launcher store when available;
+    // sign-in flow / manual entry fills the gap otherwise.
+    let handle = match sc_holotable::install::read_identity() {
+        Ok(id) => Some(id.handle),
+        Err(e) => {
+            tracing::info!("launcher identity unavailable ({e}); handle stays unbound");
+            None
         }
-        installs.sort_by_key(|i| i.channel.priority());
-        let install = installs.into_iter().next().expect("non-empty");
-        let channel = install.channel;
-        let platform = install
-            .platform_id
-            .as_deref()
-            .and_then(Platform::from_str)
-            .unwrap_or_else(|| group_for(channel));
+    };
 
-        // Best-effort handle read. Failure here is logged but not fatal —
-        // identity is bootstrapped from the launcher store when available;
-        // sign-in flow / manual entry fills the gap otherwise.
-        let handle = match sc_holotable::install::read_identity() {
-            Ok(id) => Some(id.handle),
-            Err(e) => {
-                tracing::info!("launcher identity unavailable ({e}); handle stays unbound");
-                None
-            }
-        };
+    tracing::info!(
+        channel = ?channel,
+        platform = platform.as_str(),
+        handle = ?handle,
+        elapsed_ms = start.elapsed().as_millis(),
+        "discovery complete"
+    );
+    Ok(Discovery { channel, platform, handle, install })
+}
 
-        let cache_dir = cache_dir_for(channel)?;
+/// Build the cooked blueprint catalog for the given install, running on
+/// a dedicated 32 MiB-stack thread (see module docs for the stack
+/// rationale). Runs the snapshot waterfall internally.
+pub async fn build_catalog(install: Installation) -> Result<Vec<BpView>> {
+    let (tx, rx) = mpsc::channel::<Result<Vec<BpView>>>();
+    std::thread::Builder::new()
+        .name("hearth-catalog-loader".into())
+        .stack_size(LOADER_STACK_SIZE)
+        .spawn(move || {
+            let _ = tx.send(build_catalog_blocking(install));
+        })
+        .context("spawning catalog-loader thread")?;
+    tokio::task::spawn_blocking(move || rx.recv())
+        .await
+        .context("joining catalog-loader bridge task")?
+        .map_err(|_| anyhow!("catalog-loader sender dropped"))?
+}
 
-        // ── Tier 1: processed snapshot (sub-second) ───────────────────
-        if let Some(blueprints) = try_load_processed(&cache_dir, &install) {
-            tracing::info!(
-                count = blueprints.len(),
-                channel = ?channel,
-                platform = platform.as_str(),
-                elapsed_ms = start.elapsed().as_millis(),
-                "catalog loaded from processed snapshot"
-            );
-            return Ok(Self { channel, platform, handle, blueprints });
-        }
+fn build_catalog_blocking(install: Installation) -> Result<Vec<BpView>> {
+    let start = Instant::now();
+    let channel = install.channel;
+    let cache_dir = cache_dir_for(channel)?;
 
-        // ── Tier 2: raw extract snapshot (skip p4k extraction) ────────
-        if let Some((datacore, locale)) = try_load_extract(&cache_dir, &install) {
-            let blueprints = build_blueprints(&datacore, &locale);
-            save_processed(&cache_dir, &install, &blueprints);
-            tracing::info!(
-                count = blueprints.len(),
-                channel = ?channel,
-                platform = platform.as_str(),
-                elapsed_ms = start.elapsed().as_millis(),
-                "catalog built from raw extract snapshot"
-            );
-            return Ok(Self { channel, platform, handle, blueprints });
-        }
-
-        // ── Tier 3: live parse (cold path) ────────────────────────────
-        tracing::info!(channel = ?channel, "no usable snapshot; parsing live Data.p4k");
-        let p4k_path = install.data_p4k();
-        let assets = AssetSource::open(&p4k_path)
-            .with_context(|| format!("opening Data.p4k for {channel:?}"))?;
-
-        tracing::info!("extracting AssetData ({:?})", channel);
-        let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
-            .context("AssetData::extract")?;
-        tracing::info!("parsing Datacore ({:?})", channel);
-        let datacore = Datacore::parse(&assets, &asset_data).context("Datacore::parse")?;
-
-        // Capture the raw bytes while `assets` is still open; failure to
-        // persist the cache is non-fatal (logged inside).
-        save_extract(&cache_dir, &install, &assets);
-
-        let locale_bytes =
-            read_locale_bytes(&assets).context("reading global.ini from Data.p4k")?;
-        drop(assets);
-        let locale = build_locale_map(&locale_bytes)?;
-
-        tracing::info!("building blueprint catalog");
-        let blueprints = build_blueprints(&datacore, &locale);
-        save_processed(&cache_dir, &install, &blueprints);
-
+    // ── Tier 1: processed snapshot (sub-second) ───────────────────
+    if let Some(blueprints) = try_load_processed(&cache_dir, &install) {
         tracing::info!(
             count = blueprints.len(),
             channel = ?channel,
-            platform = platform.as_str(),
             elapsed_ms = start.elapsed().as_millis(),
-            "catalog built from live parse"
+            "catalog loaded from processed snapshot"
         );
-        Ok(Self { channel, platform, handle, blueprints })
+        return Ok(blueprints);
     }
 
-    pub fn blueprints(&self) -> Vec<BpView> {
-        self.blueprints.clone()
+    // ── Tier 2: raw extract snapshot (skip p4k extraction) ────────
+    if let Some((datacore, locale)) = try_load_extract(&cache_dir, &install) {
+        let blueprints = build_blueprints(&datacore, &locale);
+        save_processed(&cache_dir, &install, &blueprints);
+        tracing::info!(
+            count = blueprints.len(),
+            channel = ?channel,
+            elapsed_ms = start.elapsed().as_millis(),
+            "catalog built from raw extract snapshot"
+        );
+        return Ok(blueprints);
     }
+
+    // ── Tier 3: live parse (cold path) ────────────────────────────
+    tracing::info!(channel = ?channel, "no usable snapshot; parsing live Data.p4k");
+    let p4k_path = install.data_p4k();
+    let assets = AssetSource::open(&p4k_path)
+        .with_context(|| format!("opening Data.p4k for {channel:?}"))?;
+
+    tracing::info!("extracting AssetData ({:?})", channel);
+    let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
+        .context("AssetData::extract")?;
+    tracing::info!("parsing Datacore ({:?})", channel);
+    let datacore = Datacore::parse(&assets, &asset_data).context("Datacore::parse")?;
+
+    // Capture the raw bytes while `assets` is still open; failure to
+    // persist the cache is non-fatal (logged inside).
+    save_extract(&cache_dir, &install, &assets);
+
+    let locale_bytes =
+        read_locale_bytes(&assets).context("reading global.ini from Data.p4k")?;
+    drop(assets);
+    let locale = build_locale_map(&locale_bytes)?;
+
+    tracing::info!("building blueprint catalog");
+    let blueprints = build_blueprints(&datacore, &locale);
+    save_processed(&cache_dir, &install, &blueprints);
+
+    tracing::info!(
+        count = blueprints.len(),
+        channel = ?channel,
+        elapsed_ms = start.elapsed().as_millis(),
+        "catalog built from live parse"
+    );
+    Ok(blueprints)
 }
 
 // ── Cache helpers ──────────────────────────────────────────────────────

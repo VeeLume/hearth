@@ -13,8 +13,17 @@
   let verifyMessage = $state<string | null>(null);
 
   onMount(async () => {
-    // active_scope triggers the SC load that the catalog also needs;
-    // the backend caches it, so doing it here is free for the pages.
+    // Remove the pre-hydration splash from app.html now that Svelte
+    // is in control. Fades out via the .hidden class for ~200ms.
+    const splash = document.getElementById("boot-splash");
+    if (splash) {
+      splash.classList.add("hidden");
+      setTimeout(() => splash.remove(), 250);
+    }
+
+    // active_scope now hits only discovery + db (no DCB parse) so this
+    // returns in ~50ms even on a cold start, populating the sidebar
+    // independently of the catalog page's own onMount.
     const result = await commands.activeScope();
     if (result.status === "ok") {
       scope = result.data;

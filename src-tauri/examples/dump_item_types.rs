@@ -7,19 +7,14 @@
 
 use std::collections::BTreeMap;
 
-fn main() {
-    // load_inner overflows the default stack on Windows (deep generated
-    // match arms) — run it on the same big-stack thread the app uses.
-    let data = std::thread::Builder::new()
-        .stack_size(hearth_lib::sc_loader::LOADER_STACK_SIZE)
-        .spawn(|| {
-            hearth_lib::sc_loader::LoadedScData::load_inner()
-                .expect("load SC data (needs an SC install)")
-        })
-        .expect("spawn loader thread")
-        .join()
-        .expect("loader thread panicked");
-    let bps = data.blueprints();
+#[tokio::main]
+async fn main() {
+    let discovery = hearth_lib::sc_loader::discover()
+        .await
+        .expect("discover SC install");
+    let bps = hearth_lib::sc_loader::build_catalog(discovery.install)
+        .await
+        .expect("build SC catalog");
 
     // (type, subtype) -> (count, sample display names)
     let mut by_type: BTreeMap<(String, String), (usize, Vec<String>)> = BTreeMap::new();
