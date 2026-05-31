@@ -186,6 +186,15 @@ pub struct BpView {
     /// Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
     /// Available for finer sub-grouping; not all items set it.
     pub item_sub_type: Option<String>,
+    /// sc-crafting category record name with the
+    /// `"BlueprintCategoryRecord."` prefix stripped — e.g. `"FPSArmours"`,
+    /// `"FPSWeapons"`, `"VehicleWeaponsS3"`, `"Medical"`. `None` when
+    /// the blueprint has no category reference. CIG-authored, more
+    /// accurate than the AttachDef-based taxonomy for "what kind of
+    /// craftable is this" — the UI uses it as the primary grouping
+    /// axis with item_type as the secondary axis (slot for armor,
+    /// size class for FPS weapons).
+    pub category_raw: Option<String>,
     /// Crafting recipe — ingredients + craft time. `None` when the
     /// blueprint has no recipe (rare; happens when the cost tree is a
     /// dormant variant the live data doesn't populate) or when the

@@ -69,9 +69,9 @@ use anyhow::{Context, Result, anyhow};
 use hearth_core::{BpView, Platform};
 use sc_holotable::asset::{
     AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
-    SnapshotCaptureConfig, snapshot_meta_from_install,
+    RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
 };
-use sc_holotable::crafting::{Blueprints, Process};
+use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::Items;
 use sc_holotable::resources::Resources;
@@ -83,7 +83,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 3;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 4;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -387,15 +387,23 @@ fn group_for(channel: Channel) -> Platform {
 }
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
-    // Three index passes over the same datacore:
-    //   - Items     — entity name keys + typed Type/SubType
-    //   - Blueprints — the full crafting catalog (Blueprint + tier-0 Recipe)
-    //   - Resources  — name_key + density for each ResourceType
+    // Index passes over the same datacore:
+    //   - Items       — entity name keys + typed Type/SubType
+    //   - Blueprints  — the full crafting catalog (Blueprint + tier-0 Recipe)
+    //   - Resources   — name_key + density for each ResourceType
+    //   - RecordPaths — Categories::build needs the path/name lookup
+    //                   (categories are empty marker records — identity
+    //                   is the record's name, exposed via RecordPaths)
+    //   - Categories  — CIG-authored crafting taxonomy (20 entries in
+    //                   SC 4.8: FPSWeapons, FPSArmours, Medical,
+    //                   VehicleWeaponsS1-6, ...)
     // Items is the only index that's also passed downstream (Blueprints
     // needs it to bake the crafted-entity name).
     let items = Items::build(datacore.records());
     let catalog = Blueprints::build(datacore, &items);
     let resources = Resources::build(datacore.records());
+    let paths = RecordPaths::build(datacore);
+    let categories = Categories::build(&paths);
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
@@ -415,6 +423,19 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
             view.item_sub_type = items
                 .item_sub_type(&entity_guid)
                 .map(|t| t.as_dcb_str().to_owned());
+        }
+        // sc-crafting category — CIG-authored grouping. Strip the
+        // verbose record-class prefix so the IPC carries just the
+        // semantic name ("FPSArmours", "VehicleWeaponsS3", ...).
+        if let Some(cat_guid) = blueprint.category
+            && let Some(cat) = categories.get(&cat_guid)
+        {
+            view.category_raw = Some(
+                cat.name
+                    .strip_prefix("BlueprintCategoryRecord.")
+                    .unwrap_or(&cat.name)
+                    .to_owned(),
+            );
         }
         // Resolve resource_name on each ingredient (bp_view leaves it
         // None because it has no Resources/LocaleMap access).

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, type BpView } from "$lib/bindings";
-  import { categoryFor } from "$lib/itemTypes";
+  import { categoryFor } from "$lib/categories";
 
   let blueprints = $state<BpView[]>([]);
   let owned = $state<Set<string>>(new Set());
@@ -89,7 +89,7 @@
       if (q) {
         const name = bp.display_name?.toLowerCase() ?? "";
         const guid = bp.blueprint_record_guid.toLowerCase();
-        const cat = categoryFor(bp.item_type, bp.item_sub_type);
+        const cat = categoryFor(bp.category_raw, bp.item_type, bp.item_sub_type);
         const catText = `${cat.main} ${cat.sub}`.toLowerCase();
         if (!(name.includes(q) || guid.includes(q) || catText.includes(q)))
           return false;
@@ -112,7 +112,7 @@
   const grouped = $derived.by((): MainGroup[] => {
     const mains = new Map<string, MainGroup & { subMap: Map<string, SubGroup> }>();
     for (const bp of filtered) {
-      const cat = categoryFor(bp.item_type, bp.item_sub_type);
+      const cat = categoryFor(bp.category_raw, bp.item_type, bp.item_sub_type);
       let main = mains.get(cat.main);
       if (!main) {
         main = {
