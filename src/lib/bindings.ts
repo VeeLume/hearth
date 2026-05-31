@@ -241,17 +241,18 @@ category_raw: string | null;
  * Stable identity key used by the UI to bundle skin / paint /
  * special-edition variants of the same base item under a single
  * collapsible row. Comes from
- * [`sc_holotable::items::ItemFamilies::family_id_of`] — a tag-tree
- * path (`"Weapon / FPS / Pistol / Coda"`), a stem-scoped key
- * (`"stem:kap_combat_heavy_core:Char_Armor_Torso:UNDEFINED"`), or
- * a `"solo:<guid>"` for items with no other signal. `None` only
- * when the BP has no crafted entity at all.
+ * [`sc_holotable::items::ItemCatalog::model_id_of`] — a
+ * display-name-derived model key
+ * (`"{category}:{design}:{item_type}:{item_sub_type}"`, e.g.
+ * `"armor:geist armor:Char_Armor_Helmet:UNDEFINED"`) or a
+ * `"solo:<guid>:..."` for gear with no other signal. Falls back to
+ * the raw guid for non-gear entities (handled in the loader).
  */
 family_id: string | null; 
 /**
- * Display name of the family's **base** item — the canonical
- * unstyled variant identified by [`sc_holotable::items::Family::base`].
- * Shared across every BpView in a family; used by the catalog UI
+ * Display name of the model's **base** item — the canonical
+ * unstyled variant identified by [`sc_holotable::items::Model::base`].
+ * Shared across every BpView in a model; used by the catalog UI
  * as the bundle row header so the row reads the base item's name
  * even when only variants are blueprinted (the base item itself
  * might have no recipe). `None` when the BP has no crafted

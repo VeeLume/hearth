@@ -73,9 +73,8 @@ use sc_holotable::asset::{
 };
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
-use sc_holotable::items::{ItemFamilies, Items};
+use sc_holotable::items::{ItemCatalog, Items};
 use sc_holotable::resources::Resources;
-use sc_holotable::tags::Tags;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -398,22 +397,21 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     //   - Categories   — CIG-authored crafting taxonomy (20 entries in
     //                    SC 4.8: FPSWeapons, FPSArmours, Medical,
     //                    VehicleWeaponsS1-6, ...)
-    //   - Tags         — needed by ItemFamilies for tag-path lookups
-    //   - ItemFamilies — variant grouping (paint / skin / "Modified"
-    //                    variants of one model share a family id)
+    //   - ItemCatalog  — variant grouping (paint / skin / "Modified"
+    //                    variants of one model share a model id)
     // Items is the only index that's also passed downstream (Blueprints
-    // and ItemFamilies both need it).
+    // and ItemCatalog both need it).
     let items = Items::build(datacore.records());
     let catalog = Blueprints::build(datacore, &items);
     let resources = Resources::build(datacore.records());
     let paths = RecordPaths::build(datacore);
     let categories = Categories::build(&paths);
-    let tags = Tags::build(datacore.records());
-    // ItemFamilies now uses entity record name stems as a secondary
-    // signal (replacing the old SItemDefinition.tags fallback that
-    // over-grouped armor via the SM_RestrictedArm marker), so the
-    // build takes &RecordPaths to read entity record names.
-    let families = ItemFamilies::build(&items, &tags, datacore.records(), &paths);
+    // ItemCatalog clusters gear into Models (one design + one slot: an
+    // item and its colorway variants) grouped under Collections (the
+    // models that read as the same design across slots/accessories, e.g.
+    // "Geist Armor"). Grouping is display-name driven (Items + &LocaleMap);
+    // &RecordPaths is used to pick the canonical base member of each model.
+    let item_catalog = ItemCatalog::build(&items, &paths, locale);
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
@@ -447,25 +445,26 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                     .to_owned(),
             );
         }
-        // Variant-bundling key — ItemFamilies always returns Some for
-        // items in the catalog (the solo fallback covers items with
-        // no other signal), so this only falls back when the BP has
+        // Variant-bundling key — ItemCatalog returns Some for any gear
+        // item it grouped into a model (the solo fallback covers items
+        // with no other signal), so this falls back to the raw guid when
+        // the entity isn't gear (ship components, props) or the BP has
         // no crafted entity at all.
         if let Some(entity_guid) = blueprint.crafted_entity_guid() {
             view.family_id = Some(
-                families
-                    .family_id_of(&entity_guid)
+                item_catalog
+                    .model_id_of(&entity_guid)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity_guid.to_string()),
             );
 
-            // Family base name — resolved through Items + LocaleMap so
+            // Model base name — resolved through Items + LocaleMap so
             // the catalog UI's bundle row header reads the canonical
             // base item's name even when only variants are blueprinted.
-            // All members of one family resolve to the same base name
+            // All members of one model resolve to the same base name
             // here; the small redundant work per-BP is cheaper than
-            // restructuring the loop to pre-compute per-family.
-            if let Some(base_guid) = families.base_of(&entity_guid)
+            // restructuring the loop to pre-compute per-model.
+            if let Some(base_guid) = item_catalog.base_of(&entity_guid)
                 && let Some(name_key) = items.name_key(&base_guid)
                 && let Some(name) = locale.resolve(name_key)
                 && !name.is_empty()

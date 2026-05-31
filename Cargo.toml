@@ -43,7 +43,7 @@ tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 # are what the loader touches directly; `missions` brings BlueprintPools and
 # `crafting` brings the Blueprint catalog they resolve against. (extract/items
 # are pulled transitively by missions/crafting, but listed for clarity.)
-sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.9.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "tags"] }
+sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.10.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "tags"] }
 
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }
@@ -88,22 +88,3 @@ strip = "symbols"
 
 [profile.release.package.sc-extract-generated]
 opt-level = 1
-
-# ── Cross-repo iteration patch ──────────────────────────────────────────
-#
-# Develop sc-holotable changes in `E:/vscode/rust/sc-holotable` and pick
-# them up here immediately without releasing a new tag. Remove this
-# block once the changes ship as a new sc-holotable version and the
-# git pin above is bumped to it.
-[patch."https://github.com/VeeLume/sc-holotable.git"]
-sc-discovery         = { path = "../sc-holotable/crates/sc-discovery" }
-sc-extract           = { path = "../sc-holotable/crates/sc-extract" }
-sc-extract-generated = { path = "../sc-holotable/crates/sc-extract-generated" }
-sc-crafting          = { path = "../sc-holotable/crates/sc-crafting" }
-sc-items             = { path = "../sc-holotable/crates/sc-items" }
-sc-manufacturers     = { path = "../sc-holotable/crates/sc-manufacturers" }
-sc-resources         = { path = "../sc-holotable/crates/sc-resources" }
-sc-tags              = { path = "../sc-holotable/crates/sc-tags" }
-sc-weapons           = { path = "../sc-holotable/crates/sc-weapons" }
-sc-missions          = { path = "../sc-holotable/crates/sc-missions" }
-sc-holotable         = { path = "../sc-holotable/crates/sc-holotable" }
