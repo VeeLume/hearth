@@ -88,7 +88,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 6;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 7;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -462,38 +462,50 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     out
 }
 
-/// Tag-tree path prefixes that identify a CIG "model" tag — the leaf
-/// segment is the model name shared across all variants (paints,
-/// editions, modified versions). Verified against SC 4.8 via the
+/// One whitelisted model-tag prefix and the model identity depth that
+/// follows it. The model id = prefix segments + `model_depth`
+/// additional segments. Sub-variant markers deeper than that get
+/// truncated, so e.g.
+/// `Weapon / FPS / Stocked / SniperRifle / Atzkav / AtzkavDE` (6 segs)
+/// truncates to the 5-seg `… / Atzkav` so the "Deadeye" special
+/// edition bundles with the base Atzkav.
+///
+/// For armor, the model identity spans **two** post-prefix segments
+/// (brand + model leaf), e.g. `Armor / FPS / Set / ClarkeDefense /
+/// FBL-8a` — both ClarkeDefense and FBL-8a together form the identity.
+#[derive(Copy, Clone)]
+struct ModelPrefix {
+    prefix: &'static str,
+    model_depth: usize,
+}
+
+/// Whitelisted model-tag families. Verified against SC 4.8 via the
 /// `probe_variants` example. Each prefix REQUIRES content after the
-/// trailing slash so generic category markers (e.g. `Weapon / FPS /
-/// Stocked` on its own) don't match — only the model-leaf variant
-/// (`Weapon / FPS / Stocked / SniperRifle / A03`) does.
-const MODEL_TAG_PREFIXES: &[&str] = &[
+/// trailing slash so generic category markers don't match.
+const MODEL_PREFIXES: &[ModelPrefix] = &[
     // FPS handheld weapons — `Weapon / FPS / <Class> / <Model>`.
-    "Weapon / FPS / Pistol / ",
-    "Weapon / FPS / SMG / ",
-    "Weapon / FPS / Shotgun / ",
-    "Weapon / FPS / Sniper / ",
-    "Weapon / FPS / LMG / ",
-    "Weapon / FPS / HMG / ",
-    "Weapon / FPS / Cannon / ",
-    "Weapon / FPS / Launcher / ",
-    "Weapon / FPS / Mining / ",
-    // FPS shoulder/stocked weapons — `Weapon / FPS / Stocked / <Class>
-    // / <Model>`. Snipers + rifles + shotguns + SMGs follow this nested
-    // path instead of the flat one above (verified for SC 4.8 SniperRifle).
-    "Weapon / FPS / Stocked / Rifle / ",
-    "Weapon / FPS / Stocked / SniperRifle / ",
-    "Weapon / FPS / Stocked / Shotgun / ",
-    "Weapon / FPS / Stocked / SMG / ",
-    "Weapon / FPS / Stocked / LMG / ",
-    "Weapon / FPS / Stocked / HMG / ",
-    // FPS Armor — `Armor / FPS / Set / <Brand> / <Model>`. Note that
-    // some armor sets ship with ONLY the 3-segment `Armor / FPS / Set`
-    // marker tag (no Brand / Model leaf) — those fall through to the
-    // item.tags signal below.
-    "Armor / FPS / Set / ",
+    ModelPrefix { prefix: "Weapon / FPS / Pistol / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / SMG / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Shotgun / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Sniper / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / LMG / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / HMG / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Cannon / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Launcher / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Mining / ", model_depth: 1 },
+    // FPS shoulder/stocked weapons —
+    // `Weapon / FPS / Stocked / <Class> / <Model>`.
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / Rifle / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / SniperRifle / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / Shotgun / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / SMG / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / LMG / ", model_depth: 1 },
+    ModelPrefix { prefix: "Weapon / FPS / Stocked / HMG / ", model_depth: 1 },
+    // FPS Armor — `Armor / FPS / Set / <Brand> / <Model>`. Brand +
+    // model leaf together form the identity. Some armor sets ship
+    // with ONLY the 3-segment `Armor / FPS / Set` marker (no Brand /
+    // Model leaf) — those fall through to the item.tags signal below.
+    ModelPrefix { prefix: "Armor / FPS / Set / ", model_depth: 2 },
 ];
 
 /// Compute the bundle key for a crafted entity via a priority chain.
@@ -522,31 +534,59 @@ fn compute_model_id(entity_guid: Guid, records: &RecordStore, tags: &Tags) -> St
         return entity_guid.to_string();
     };
 
-    // 1. ECD model tag — first one matching a whitelisted prefix.
+    // 1. ECD model tag — first one matching a whitelisted prefix,
+    //    TRUNCATED to the model depth so sub-variant markers like
+    //    `… / Atzkav / AtzkavDE` collapse to `… / Atzkav`.
     for tag_guid in &ecd.tags {
         let path_segments = tags.path(tag_guid);
         if path_segments.is_empty() {
             continue;
         }
         let path = path_segments.join(" / ");
-        for prefix in MODEL_TAG_PREFIXES {
-            if path.starts_with(prefix) {
-                return path;
+        for entry in MODEL_PREFIXES {
+            if !path.starts_with(entry.prefix) {
+                continue;
             }
+            // Prefix segment count = the number of "X / " chunks
+            // before the trailing slash (e.g. `Weapon / FPS / Pistol /`
+            // → 3 segments: Weapon, FPS, Pistol).
+            let prefix_seg_count = entry
+                .prefix
+                .trim_end_matches(" / ")
+                .split(" / ")
+                .count();
+            let total = prefix_seg_count + entry.model_depth;
+            // Path must have at least the model segments after the
+            // prefix (otherwise the tag was just the prefix itself,
+            // which shouldn't match anyway thanks to the trailing
+            // slash — defensive).
+            if path_segments.len() < total {
+                continue;
+            }
+            return path_segments[..total].join(" / ");
         }
     }
 
-    // 2. SItemDefinition.tags first token (set identifier for the
-    //    armor sets that don't have a 5-segment Set tag).
-    if let Some(item_def) = find_item_def(ecd, &records.pools)
-        && let Some(token) = item_def.tags.split_whitespace().next()
-        && token.contains('_')
-        // Filter out parametric "Set_01" / "Color_02" tokens that
-        // some items lead with — those identify VARIANTS, not models.
-        && !token.starts_with("Set_")
-        && !token.starts_with("Color_")
-    {
-        return format!("item-tag:{token}");
+    // 2. SItemDefinition.tags — the model identifier is the FIRST
+    //    whitespace-separated token that looks specific:
+    //      - contains an underscore (filters out plain words like
+    //        "stocked" / "pistol" / "sniper")
+    //      - isn't a parametric variant marker (Set_01 / Color_02 /
+    //        Texture_03 etc. — those identify VARIANTS, not models)
+    //    For Novian Crossbow this skips past "stocked" to land on
+    //    "utfl_crossbow_ballistic_01". For Corbel Helmet it picks
+    //    "omc_utility_heavy" directly. For Tailwind Flight Helmet
+    //    it skips past Set_01/Texture_03/Color_01 to "vgl_flightsuit_helmet".
+    if let Some(item_def) = find_item_def(ecd, &records.pools) {
+        let first_specific = item_def.tags.split_whitespace().find(|t| {
+            t.contains('_')
+                && !t.starts_with("Set_")
+                && !t.starts_with("Color_")
+                && !t.starts_with("Texture_")
+        });
+        if let Some(token) = first_specific {
+            return format!("item-tag:{token}");
+        }
     }
 
     // 3. Entity GUID fallback.
