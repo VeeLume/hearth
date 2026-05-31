@@ -74,6 +74,7 @@ use sc_holotable::asset::{
 use sc_holotable::crafting::{Blueprints, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::Items;
+use sc_holotable::resources::Resources;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -82,7 +83,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 2;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 3;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -386,13 +387,15 @@ fn group_for(channel: Channel) -> Platform {
 }
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
-    // The per-entity item index (display-name keys + typed Type/SubType).
+    // Three index passes over the same datacore:
+    //   - Items     — entity name keys + typed Type/SubType
+    //   - Blueprints — the full crafting catalog (Blueprint + tier-0 Recipe)
+    //   - Resources  — name_key + density for each ResourceType
+    // Items is the only index that's also passed downstream (Blueprints
+    // needs it to bake the crafted-entity name).
     let items = Items::build(datacore.records());
-    // The full sc-crafting blueprint catalog — every craftable BP in
-    // the DCB, not just those reachable from mission reward pools.
-    // This is what the catalog UI shows; pools are a mission-reward
-    // mechanic and live in the future Missions view.
     let catalog = Blueprints::build(datacore, &items);
+    let resources = Resources::build(datacore.records());
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
@@ -413,9 +416,38 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                 .item_sub_type(&entity_guid)
                 .map(|t| t.as_dcb_str().to_owned());
         }
+        // Resolve resource_name on each ingredient (bp_view leaves it
+        // None because it has no Resources/LocaleMap access).
+        if let Some(recipe) = view.recipe.as_mut() {
+            fill_resource_names(&mut recipe.ingredients, &resources, locale);
+        }
         out.push(view);
     }
     out
+}
+
+/// Fill `Ingredient.resource_name` for each ingredient by looking up
+/// the resource's `name_key` in the locale map. Ingredients whose GUID
+/// doesn't parse or doesn't resolve stay `None`; the UI falls back to
+/// the GUID.
+fn fill_resource_names(
+    ingredients: &mut [hearth_core::Ingredient],
+    resources: &Resources,
+    locale: &LocaleMap,
+) {
+    for ing in ingredients {
+        let Ok(guid) = ing.resource_guid.parse::<sc_holotable::asset::Guid>() else {
+            continue;
+        };
+        let Some(resource) = resources.get(&guid) else {
+            continue;
+        };
+        if let Some(name) = locale.resolve(&resource.name_key)
+            && !name.is_empty()
+        {
+            ing.resource_name = Some(name.to_owned());
+        }
+    }
 }
 
 fn build_locale_map(bytes: &[u8]) -> Result<LocaleMap> {

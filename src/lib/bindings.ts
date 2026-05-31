@@ -201,7 +201,40 @@ item_type: string | null;
  * Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
  * Available for finer sub-grouping; not all items set it.
  */
-item_sub_type: string | null }
+item_sub_type: string | null; 
+/**
+ * Crafting recipe — ingredients + craft time. `None` when the
+ * blueprint has no recipe (rare; happens when the cost tree is a
+ * dormant variant the live data doesn't populate) or when the
+ * crafted item has no recoverable ingredient list.
+ */
+recipe: Recipe | null }
+/**
+ * One resource ingredient in a [`Recipe`].
+ */
+export type Ingredient = { 
+/**
+ * `ResourceType` GUID, hex-string form.
+ */
+resource_guid: string; 
+/**
+ * Resolved resource name (e.g. `"Aluminum"`). `None` when the
+ * resource's `name_key` doesn't resolve in the locale map (rare
+ * — SC 4.8 resolves 205 / 206).
+ */
+resource_name: string | null; 
+/**
+ * Quantity normalized to SCU (Standard Cargo Units). `None` when
+ * the cost's `CargoQuantity` is a polymorphic-fallback variant
+ * the generator doesn't recognise. Typical recipe ingredients are
+ * well under 1 SCU each (e.g. P4-AR: Aluminum 0.04, Iron 0.02).
+ */
+quantity_scu: number | null; 
+/**
+ * Minimum required quality tier (`0` if no lower bound). Today
+ * always 0 in SC 4.8.
+ */
+min_quality: number }
 /**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be
@@ -240,6 +273,26 @@ export type Platform =
  * Test shards (PTU + EPTU + Tech Preview). Wipes frequently.
  */
 "ptu"
+/**
+ * Flat projection of a `sc_crafting::Blueprint.tiers[0].recipe` shaped
+ * for the catalog UI. Today's SC 4.8 data is uniformly
+ * `Select { N, [Select { 1, [Resource] }] }`, which we flatten to a
+ * straight `Vec<Ingredient>`. The polymorphic cost tree stays in
+ * sc-crafting as forward-compat for when CIG ships item costs /
+ * optional costs / dormant variants.
+ */
+export type Recipe = { 
+/**
+ * Total craft time normalized to seconds (from
+ * `TimeValue_Partitioned.{days,hours,minutes,seconds}`). `None`
+ * when the blueprint has no time component.
+ */
+craft_time_seconds: number | null; 
+/**
+ * Each resource the recipe needs. Order matches the DCB's
+ * declared cost order.
+ */
+ingredients: Ingredient[] }
 /**
  * Stable record-level identifier. UUIDv7 so it's time-sortable and
  * generated client-side without a central authority. Wraps `Uuid` rather

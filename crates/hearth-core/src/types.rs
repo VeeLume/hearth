@@ -186,4 +186,45 @@ pub struct BpView {
     /// Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
     /// Available for finer sub-grouping; not all items set it.
     pub item_sub_type: Option<String>,
+    /// Crafting recipe — ingredients + craft time. `None` when the
+    /// blueprint has no recipe (rare; happens when the cost tree is a
+    /// dormant variant the live data doesn't populate) or when the
+    /// crafted item has no recoverable ingredient list.
+    pub recipe: Option<Recipe>,
+}
+
+/// Flat projection of a `sc_crafting::Blueprint.tiers[0].recipe` shaped
+/// for the catalog UI. Today's SC 4.8 data is uniformly
+/// `Select { N, [Select { 1, [Resource] }] }`, which we flatten to a
+/// straight `Vec<Ingredient>`. The polymorphic cost tree stays in
+/// sc-crafting as forward-compat for when CIG ships item costs /
+/// optional costs / dormant variants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct Recipe {
+    /// Total craft time normalized to seconds (from
+    /// `TimeValue_Partitioned.{days,hours,minutes,seconds}`). `None`
+    /// when the blueprint has no time component.
+    pub craft_time_seconds: Option<f32>,
+    /// Each resource the recipe needs. Order matches the DCB's
+    /// declared cost order.
+    pub ingredients: Vec<Ingredient>,
+}
+
+/// One resource ingredient in a [`Recipe`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct Ingredient {
+    /// `ResourceType` GUID, hex-string form.
+    pub resource_guid: String,
+    /// Resolved resource name (e.g. `"Aluminum"`). `None` when the
+    /// resource's `name_key` doesn't resolve in the locale map (rare
+    /// — SC 4.8 resolves 205 / 206).
+    pub resource_name: Option<String>,
+    /// Quantity normalized to SCU (Standard Cargo Units). `None` when
+    /// the cost's `CargoQuantity` is a polymorphic-fallback variant
+    /// the generator doesn't recognise. Typical recipe ingredients are
+    /// well under 1 SCU each (e.g. P4-AR: Aluminum 0.04, Iron 0.02).
+    pub quantity_scu: Option<f32>,
+    /// Minimum required quality tier (`0` if no lower bound). Today
+    /// always 0 in SC 4.8.
+    pub min_quality: i32,
 }
