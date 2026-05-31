@@ -142,8 +142,9 @@
 
 {#if loading}
   <p class="status">
-    Loading SC reference data… (first run takes ~10 s while the Datacore is
-    parsed; subsequent loads are instant)
+    Loading SC reference data… (first run after install / SC patch parses
+    the Datacore — ~30 s; subsequent launches load the cached catalog in
+    under a second)
   </p>
 {:else if errorMessage}
   <div class="error">
