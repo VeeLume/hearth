@@ -8,9 +8,38 @@
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let query = $state("");
+  // Set of blueprint_record_guids whose row is currently expanded
+  // (recipe panel visible). Multiple can be open at once.
+  let expanded = $state<Set<string>>(new Set());
 
   type Filter = "all" | "owned" | "unowned";
   let filter = $state<Filter>("all");
+
+  function toggleExpanded(guid: string) {
+    const next = new Set(expanded);
+    next.has(guid) ? next.delete(guid) : next.add(guid);
+    expanded = next;
+  }
+
+  /** Format a craft time in seconds as a short human string. */
+  function formatCraftTime(seconds: number | null): string {
+    if (seconds == null || seconds <= 0) return "—";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.round(seconds % 60);
+    if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    return `${s}s`;
+  }
+
+  /** Format an SCU quantity. Most recipe ingredients are << 1 SCU
+   *  (e.g. 0.02), so default to 2 decimals; widen for larger values. */
+  function formatScu(scu: number | null): string {
+    if (scu == null) return "?";
+    if (scu < 1) return scu.toFixed(2);
+    if (scu < 10) return scu.toFixed(1);
+    return scu.toFixed(0);
+  }
 
   onMount(async () => {
     const [bpResult, ownedResult] = await Promise.all([
@@ -191,29 +220,66 @@
             <ul>
               {#each subGroup.items as bp, i (`${bp.blueprint_record_guid}|${bp.crafted_entity_guid ?? ""}|${i}`)}
                 {@const isOwned = owned.has(bp.blueprint_record_guid)}
-                <li class:owned={isOwned}>
-                  <button
-                    class="own-toggle"
-                    class:on={isOwned}
-                    title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
-                    onclick={() => toggleOwned(bp.blueprint_record_guid)}
-                  >
-                    {isOwned ? "✓" : ""}
-                  </button>
-                  <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
-                  {#if bp.display_name}
-                    <span class="bp-guid">{bp.blueprint_record_guid}</span>
-                  {/if}
+                {@const isExpanded = expanded.has(bp.blueprint_record_guid)}
+                <li class:owned={isOwned} class:expanded={isExpanded}>
+                  <div class="bp-row">
+                    <button
+                      class="own-toggle"
+                      class:on={isOwned}
+                      title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
+                      onclick={() => toggleOwned(bp.blueprint_record_guid)}
+                    >
+                      {isOwned ? "✓" : ""}
+                    </button>
+                    <button
+                      class="bp-expand"
+                      title={isExpanded ? "Hide recipe" : "Show recipe"}
+                      onclick={() => toggleExpanded(bp.blueprint_record_guid)}
+                    >
+                      <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
+                      <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
+                      {#if bp.display_name}
+                        <span class="bp-guid">{bp.blueprint_record_guid}</span>
+                      {/if}
+                      {#if bp.recipe?.craft_time_seconds}
+                        <span class="bp-time" title="Craft time">⏱ {formatCraftTime(bp.recipe.craft_time_seconds)}</span>
+                      {/if}
+                    </button>
 
-                  <!-- Wishlist intents — present but disabled until Stage 7. -->
-                  <div class="wish-group">
-                    {#if !isOwned}
-                      <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
-                    {:else}
-                      <span class="wish placeholder-slot">·</span>
-                    {/if}
-                    <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                    <!-- Wishlist intents — present but disabled until Stage 7. -->
+                    <div class="wish-group">
+                      {#if !isOwned}
+                        <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
+                      {:else}
+                        <span class="wish placeholder-slot">·</span>
+                      {/if}
+                      <span class="wish soon" title="Want crafted item — coming in a later version">♡</span>
+                    </div>
                   </div>
+
+                  {#if isExpanded}
+                    <div class="recipe-panel">
+                      {#if bp.recipe}
+                        {#if bp.recipe.ingredients.length > 0}
+                          <ul class="ingredients">
+                            {#each bp.recipe.ingredients as ing (ing.resource_guid)}
+                              <li class="ingredient">
+                                <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
+                                <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
+                                {#if ing.min_quality > 0}
+                                  <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
+                                {/if}
+                              </li>
+                            {/each}
+                          </ul>
+                        {:else}
+                          <span class="recipe-empty">Recipe has no listed ingredients.</span>
+                        {/if}
+                      {:else}
+                        <span class="recipe-empty">No recipe data for this blueprint.</span>
+                      {/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -403,10 +469,6 @@
     padding: 0;
   }
   li {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    padding: 0.5rem 0.6rem;
     border-radius: 8px;
     border: 1px solid transparent;
   }
@@ -415,6 +477,20 @@
   }
   li.owned {
     background: linear-gradient(90deg, var(--ember-glow), transparent 60%);
+  }
+  li.expanded {
+    background: var(--panel);
+    border-color: var(--line);
+  }
+  li.owned.expanded {
+    background: linear-gradient(90deg, var(--ember-glow), var(--panel) 60%);
+    border-color: var(--ember-dim);
+  }
+  .bp-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.5rem 0.6rem;
   }
   .own-toggle {
     width: 1.4rem;
@@ -439,14 +515,59 @@
     color: #1a1209;
     font-weight: 700;
   }
+  /* The expand button is a transparent affordance over most of the row;
+     it carries the name, chevron, GUID, and a craft-time chip. */
+  .bp-expand {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.1rem 0.1rem;
+    background: transparent;
+    border: none;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .bp-expand:hover .chevron,
+  .bp-expand:focus-visible .chevron {
+    color: var(--ember);
+  }
+  .chevron {
+    width: 0.9rem;
+    flex: 0 0 auto;
+    color: var(--faint);
+    font-size: 0.75rem;
+    transition: transform 120ms ease-out, color 90ms;
+    display: inline-block;
+  }
+  .chevron.open {
+    transform: rotate(90deg);
+    color: var(--ember);
+  }
   .bp-name {
     flex: 1;
     font-size: 0.9rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .bp-guid {
     font-family: ui-monospace, "SF Mono", Consolas, monospace;
     font-size: 0.72rem;
     color: var(--faint);
+    flex: 0 0 auto;
+  }
+  .bp-time {
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    background: var(--panel-2);
   }
   .wish-group {
     display: flex;
@@ -465,5 +586,58 @@
   }
   .wish.placeholder-slot {
     opacity: 0.3;
+  }
+
+  /* ── Recipe panel (visible when a row is expanded) ── */
+  .recipe-panel {
+    padding: 0.4rem 0.8rem 0.7rem 2.4rem;
+    border-top: 1px dashed var(--line);
+    margin: 0 0.6rem;
+  }
+  .ingredients {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .ingredient {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    padding: 0.15rem 0;
+    border: none;
+  }
+  .ingredient:hover {
+    background: transparent;
+  }
+  .ing-qty {
+    flex: 0 0 4.5rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.82rem;
+    color: var(--ember);
+    font-weight: 500;
+  }
+  .ing-unit {
+    font-size: 0.65rem;
+    color: var(--faint);
+    font-weight: 400;
+    margin-left: 0.1rem;
+  }
+  .ing-name {
+    flex: 1;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+  .ing-quality {
+    font-size: 0.7rem;
+    color: var(--muted);
+    padding: 0.05rem 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .recipe-empty {
+    font-size: 0.8rem;
+    color: var(--faint);
+    font-style: italic;
   }
 </style>
