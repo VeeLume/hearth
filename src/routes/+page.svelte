@@ -24,13 +24,27 @@
   }
 
   // ─── Variant bundling ─────────────────────────────────────────────
-  // CIG currently ships every armour skin / weapon paint as its own
-  // blueprint with an identical recipe to the base item. We group BPs
-  // within a subcategory by their exact recipe signature; same-recipe
-  // groups of 2+ render as a single collapsible "Geist Armor Arms · 4/7"
-  // row with the per-variant ownership checkmarks behind expansion.
-  // Singleton groups (BPs with unique recipes) render as a standalone
-  // row, same as today.
+  // CIG ships every armour skin / weapon paint as its own blueprint
+  // crafting its own entity. The structural link between variants is
+  // the **model tag** in the DCB tag tree: every Coda Pistol variant
+  // (base + paints + "Modified") shares the leaf tag
+  // `Weapon / FPS / Pistol / Coda`; every Geist Armor Arms variant
+  // shares `Armor / FPS / Set / ClarkeDefense / FBL-8a`.
+  //
+  // The loader resolves that tag once per BP and ships it as
+  // `bp.model_id`. We bundle BPs by (subgroup × model_id): same
+  // model_id within a subgroup ⇒ one collapsible row. The fallback
+  // when an entity has no recognised model tag is the crafted-entity
+  // GUID, so BPs that share an entity (multiple recipes for the same
+  // item, e.g. Cryo-Star SL) also bundle, while unique items stay as
+  // singletons.
+  //
+  // Recipes are *not* part of the bundle key any more — earlier we
+  // bundled by recipe equality and that produced cross-family bundles
+  // (LH86 + S-38 + Salvo + Coda pistols all under one row because
+  // they happen to share a 3-ingredient recipe). The recipe panel
+  // still displays the shared recipe of the bundle's first member;
+  // SC 4.8 data has every same-model variant on the same recipe.
 
   type Leaf = { kind: "leaf"; bp: BpView; sortName: string };
   type Bundle = {
@@ -43,36 +57,27 @@
     sortName: string;
     /** Stable expand-set key, independent of render order. */
     expandKey: string;
-    /** Shared recipe (all bundle members have identical recipes). */
+    /** Recipe shown in the expansion (first member's recipe — all
+     *  members share it in SC 4.8 data). */
     recipe: BpView["recipe"];
   };
   type GroupItem = Leaf | Bundle;
 
-  function recipeSignature(bp: BpView): string {
-    if (!bp.recipe || bp.recipe.ingredients.length === 0) return "";
-    const ings = [...bp.recipe.ingredients]
-      .map((i) => `${i.resource_guid}=${i.quantity_scu ?? "?"}q${i.min_quality}`)
-      .sort()
-      .join("|");
-    return `${bp.recipe.craft_time_seconds ?? "?"};${ings}`;
-  }
-
   function bundleItems(items: BpView[]): GroupItem[] {
-    const bySignature = new Map<string, BpView[]>();
-    const singletons: BpView[] = []; // BPs with no usable recipe — never bundled
+    const byModel = new Map<string, BpView[]>();
+    const unkeyed: BpView[] = []; // BPs with no model_id — render as singletons
     for (const bp of items) {
-      const sig = recipeSignature(bp);
-      if (!sig) {
-        singletons.push(bp);
+      if (!bp.model_id) {
+        unkeyed.push(bp);
         continue;
       }
-      const arr = bySignature.get(sig) ?? [];
+      const arr = byModel.get(bp.model_id) ?? [];
       arr.push(bp);
-      bySignature.set(sig, arr);
+      byModel.set(bp.model_id, arr);
     }
 
     const out: GroupItem[] = [];
-    for (const arr of bySignature.values()) {
+    for (const arr of byModel.values()) {
       if (arr.length === 1) {
         const bp = arr[0];
         out.push({
@@ -99,7 +104,7 @@
         });
       }
     }
-    for (const bp of singletons) {
+    for (const bp of unkeyed) {
       out.push({
         kind: "leaf",
         bp,

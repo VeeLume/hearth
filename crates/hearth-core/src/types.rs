@@ -195,6 +195,15 @@ pub struct BpView {
     /// axis with item_type as the secondary axis (slot for armor,
     /// size class for FPS weapons).
     pub category_raw: Option<String>,
+    /// Stable identity key used by the UI to bundle skin variants of
+    /// the same base item under a single collapsible row. Computed
+    /// from the crafted entity's tag tree: for FPS weapons it's the
+    /// model tag like `"Weapon / FPS / Pistol / Coda"`, for FPS armor
+    /// `"Armor / FPS / Set / ClarkeDefense / FBL-8a"`. Falls back to
+    /// the crafted entity GUID for items without a model tag (covers
+    /// same-entity multi-BP cases like Cryo-Star coolers). `None` only
+    /// for BPs without a crafted entity at all.
+    pub model_id: Option<String>,
     /// Crafting recipe — ingredients + craft time. `None` when the
     /// blueprint has no recipe (rare; happens when the cost tree is a
     /// dormant variant the live data doesn't populate) or when the

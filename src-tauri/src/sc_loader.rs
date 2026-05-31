@@ -67,14 +67,17 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use hearth_core::{BpView, Platform};
+use sc_holotable::asset::generated::{EntityClassDefinition, RecordLookup};
 use sc_holotable::asset::{
-    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
-    RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
+    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, Guid, LocaleMap,
+    ProcessedSnapshot, RecordPaths, RecordStore, SnapshotCaptureConfig,
+    snapshot_meta_from_install,
 };
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::Items;
 use sc_holotable::resources::Resources;
+use sc_holotable::tags::Tags;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -83,7 +86,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 4;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 5;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -404,6 +407,12 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     let resources = Resources::build(datacore.records());
     let paths = RecordPaths::build(datacore);
     let categories = Categories::build(&paths);
+    // Tag tree — needed to compute model_id (variant bundling key).
+    // Each crafted-entity carries a Vec<Guid> of tag refs; we look for
+    // one whose path matches a known model-tag prefix (e.g.
+    // `Weapon / FPS / Pistol / <Model>`) and use that path as the
+    // shared identity across variants. See compute_model_id below.
+    let tags = Tags::build(datacore.records());
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
@@ -437,6 +446,10 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                     .to_owned(),
             );
         }
+        // Variant-bundling key — see compute_model_id docs.
+        if let Some(entity_guid) = blueprint.crafted_entity_guid() {
+            view.model_id = Some(compute_model_id(entity_guid, datacore.records(), &tags));
+        }
         // Resolve resource_name on each ingredient (bp_view leaves it
         // None because it has no Resources/LocaleMap access).
         if let Some(recipe) = view.recipe.as_mut() {
@@ -445,6 +458,58 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
         out.push(view);
     }
     out
+}
+
+/// Tag-tree path prefixes that identify a CIG "model" tag — the leaf
+/// segment is the model name shared across all variants (paints,
+/// editions, modified versions). Verified against SC 4.8 via the
+/// `probe_variants` example for FPS weapons and FPS armor; extend as
+/// other categories surface (ship weapons currently use
+/// `SItemDefinition.tags` string instead of ECD tags, so they fall
+/// through to the entity-GUID fallback for now).
+const MODEL_TAG_PREFIXES: &[&str] = &[
+    // FPS Weapons — pattern: `Weapon / FPS / <Class> / <Model>` —
+    // shared by base + all paints + magazines for that pistol.
+    "Weapon / FPS / Pistol / ",
+    "Weapon / FPS / Rifle / ",
+    "Weapon / FPS / SMG / ",
+    "Weapon / FPS / Shotgun / ",
+    "Weapon / FPS / Sniper / ",
+    "Weapon / FPS / LMG / ",
+    "Weapon / FPS / HMG / ",
+    "Weapon / FPS / Cannon / ",
+    "Weapon / FPS / Launcher / ",
+    "Weapon / FPS / Mining / ",
+    // FPS Armor — pattern: `Armor / FPS / Set / <Brand> / <Model>` —
+    // shared by base + all paints in one armor set.
+    "Armor / FPS / Set / ",
+];
+
+/// Compute the bundle key for a crafted entity. Tag-based when the
+/// entity carries a known model tag; otherwise the entity GUID itself
+/// (so multiple blueprints crafting the same entity — e.g. the three
+/// Cryo-Star SL cooler BPs — still bundle together, while distinct
+/// entities stay as singletons).
+fn compute_model_id(entity_guid: Guid, records: &RecordStore, tags: &Tags) -> String {
+    if let Some(handle) = EntityClassDefinition::lookup(&records.records, &entity_guid)
+        && let Some(ecd) = handle.get(&records.pools)
+    {
+        for tag_guid in &ecd.tags {
+            let path_segments = tags.path(tag_guid);
+            if path_segments.is_empty() {
+                continue;
+            }
+            let path = path_segments.join(" / ");
+            for prefix in MODEL_TAG_PREFIXES {
+                if path.starts_with(prefix) {
+                    return path;
+                }
+            }
+        }
+    }
+    // No model tag — fall back to entity GUID. Same-entity multi-BP
+    // cases bundle; distinct-entity items become singletons.
+    entity_guid.to_string()
 }
 
 /// Fill `Ingredient.resource_name` for each ingredient by looking up
