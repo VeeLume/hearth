@@ -26,100 +26,152 @@
     else expanded.add(key);
   }
 
-  // ─── Variant bundling ─────────────────────────────────────────────
+  // ─── BP collapse & variant bundling ───────────────────────────────
   // CIG ships every armour skin / weapon paint as its own blueprint
-  // crafting its own entity. The structural link between variants is
-  // the **model tag** in the DCB tag tree: every Coda Pistol variant
-  // (base + paints + "Modified") shares the leaf tag
-  // `Weapon / FPS / Pistol / Coda`; every Geist Armor Arms variant
-  // shares `Armor / FPS / Set / ClarkeDefense / FBL-8a`.
+  // crafting its own entity. sc-items groups those into a Model (one
+  // design + one slot) and ships the model id on every BP as
+  // `bp.family_id`, plus the design's base-item name as
+  // `bp.family_base_name`. The fallback when a BP has no model
+  // (non-gear: ship components, props) is the crafted-entity GUID, so
+  // those stay as singletons.
   //
-  // The loader resolves that tag once per BP and ships it as
-  // `bp.family_id`. We bundle BPs by (subgroup × family_id): same
-  // family_id within a subgroup ⇒ one collapsible row. The fallback
-  // when an entity has no recognised model tag is the crafted-entity
-  // GUID, so BPs that share an entity (multiple recipes for the same
-  // item, e.g. Cryo-Star SL) also bundle, while unique items stay as
-  // singletons.
+  // Two collapses happen here, in order:
+  //   1. Same-entity BPs → one Craftable. Several blueprints can craft
+  //      the exact same item (same crafted_entity_guid, same recipe in
+  //      SC 4.8). Owning any one lets you craft it, so we fold them:
+  //      ownership is "own ANY of these BPs".
+  //   2. Same-model Craftables → one Bundle (the collapsible variant
+  //      row), titled by the base item. A model whose only blueprint is
+  //      a colorway (no base BP) still renders as a bundle — same shape,
+  //      just a 0/1 count and no "Standard" row in the expansion. Only a
+  //      lone Craftable that IS the base stays a plain leaf (nothing to
+  //      expand into beyond its own recipe).
   //
-  // Recipes are *not* part of the bundle key any more — earlier we
-  // bundled by recipe equality and that produced cross-family bundles
-  // (LH86 + S-38 + Salvo + Coda pistols all under one row because
-  // they happen to share a 3-ingredient recipe). The recipe panel
-  // still displays the shared recipe of the bundle's first member;
-  // SC 4.8 data has every same-model variant on the same recipe.
+  // Recipes are not part of any key — the panel shows the first
+  // member's recipe; SC 4.8 data has every same-model variant (and
+  // every duplicate BP) on the same recipe.
 
-  type Leaf = { kind: "leaf"; bp: BpView; sortName: string };
+  /** A craftable entity, possibly backed by several interchangeable
+   *  blueprints (same crafted_entity_guid). Ownership = own ANY of them. */
+  type Craftable = {
+    /** Representative BP (shortest name) — source of name/recipe/type/family. */
+    rep: BpView;
+    /** Every blueprint_record_guid that crafts this entity (>= 1). */
+    bpGuids: string[];
+    /** Stable identity — crafted entity guid, or the BP guid when none. */
+    entityKey: string;
+  };
+
+  type Leaf = {
+    kind: "leaf";
+    item: Craftable;
+    /** Row title — base item name for gear, else the item's own name. */
+    baseName: string;
+    sortName: string;
+  };
   type Bundle = {
     kind: "bundle";
-    /** Shortest display name in the bundle — typically the un-skinned base. */
+    /** Base item name — the bundle's row title. */
     baseName: string;
     /** Members sorted by name length (shortest first → base on top). */
-    bps: BpView[];
+    items: Craftable[];
     /** Sort key for the parent list (== baseName). */
     sortName: string;
     /** Stable expand-set key, independent of render order. */
     expandKey: string;
-    /** Recipe shown in the expansion (first member's recipe — all
-     *  members share it in SC 4.8 data). */
+    /** Recipe shown in the expansion (first member's — all members share it). */
     recipe: BpView["recipe"];
   };
   type GroupItem = Leaf | Bundle;
 
-  function bundleItems(items: BpView[]): GroupItem[] {
-    const byModel = new Map<string, BpView[]>();
-    const unkeyed: BpView[] = []; // BPs with no family_id — render as singletons
+  function nameOf(bp: BpView): string {
+    return bp.display_name ?? bp.blueprint_record_guid;
+  }
+
+  /** Collapse #1 — fold BPs that craft the same entity into one Craftable. */
+  function collapseCraftables(items: BpView[]): Craftable[] {
+    const byEntity = new Map<string, BpView[]>();
+    const out: Craftable[] = [];
     for (const bp of items) {
-      if (!bp.family_id) {
-        unkeyed.push(bp);
+      const key = bp.crafted_entity_guid;
+      if (!key) {
+        // No crafted entity to dedupe on — standalone craftable.
+        out.push({ rep: bp, bpGuids: [bp.blueprint_record_guid], entityKey: bp.blueprint_record_guid });
         continue;
       }
-      const arr = byModel.get(bp.family_id) ?? [];
+      const arr = byEntity.get(key) ?? [];
       arr.push(bp);
-      byModel.set(bp.family_id, arr);
+      byEntity.set(key, arr);
+    }
+    for (const [key, arr] of byEntity) {
+      const rep = arr.reduce((a, b) => (nameOf(b).length < nameOf(a).length ? b : a));
+      out.push({ rep, bpGuids: arr.map((b) => b.blueprint_record_guid), entityKey: key });
+    }
+    return out;
+  }
+
+  /** Collapse #2 — group Craftables into per-model bundles / base-titled leaves. */
+  function bundleItems(items: BpView[]): GroupItem[] {
+    const craftables = collapseCraftables(items);
+    const byModel = new Map<string, Craftable[]>();
+    const unkeyed: Craftable[] = []; // no family_id — singletons under own name
+    for (const c of craftables) {
+      const fid = c.rep.family_id;
+      if (!fid) {
+        unkeyed.push(c);
+        continue;
+      }
+      const arr = byModel.get(fid) ?? [];
+      arr.push(c);
+      byModel.set(fid, arr);
     }
 
     const out: GroupItem[] = [];
     for (const arr of byModel.values()) {
-      if (arr.length === 1) {
-        const bp = arr[0];
-        out.push({
-          kind: "leaf",
-          bp,
-          sortName: bp.display_name ?? bp.blueprint_record_guid,
-        });
+      // Base item name from sc-items (identical across a model's members, so
+      // read it before sorting); falls back to the shortest blueprinted name.
+      const shortest = arr.reduce((a, b) =>
+        nameOf(b.rep).length < nameOf(a.rep).length ? b : a,
+      );
+      const baseName = arr[0].rep.family_base_name ?? nameOf(shortest.rep);
+      // Base member first — identified by name, NOT by length (a colorway can
+      // be shorter than the base). Remaining members shortest-first.
+      const sorted = [...arr].sort((a, b) => {
+        const aBase = nameOf(a.rep) === baseName;
+        const bBase = nameOf(b.rep) === baseName;
+        if (aBase !== bBase) return aBase ? -1 : 1;
+        return (
+          nameOf(a.rep).length - nameOf(b.rep).length ||
+          nameOf(a.rep).localeCompare(nameOf(b.rep))
+        );
+      });
+      // A lone member that IS the base → plain leaf (no variants to manage,
+      // nothing to expand into beyond its own recipe). Everything else —
+      // multiple variants, OR a single colorway with no base BP — renders
+      // as a bundle so the variant-only case looks like a normal grouping
+      // (0/1 count, "Standard" simply absent from the expansion).
+      const loneBase =
+        sorted.length === 1 &&
+        variantSuffix(nameOf(sorted[0].rep), baseName) === "Standard";
+      if (loneBase) {
+        out.push({ kind: "leaf", item: sorted[0], baseName, sortName: baseName });
       } else {
-        const sorted = [...arr].sort((a, b) => {
-          const la = (a.display_name ?? a.blueprint_record_guid).length;
-          const lb = (b.display_name ?? b.blueprint_record_guid).length;
-          return la - lb || (a.display_name ?? "").localeCompare(b.display_name ?? "");
-        });
-        // Bundle header = base item's name from sc-items::ItemFamilies
-        // (resolved server-side and shipped on every member as
-        // `family_base_name`). Falls back to the shortest blueprinted
-        // display name when the base has no resolvable name — same
-        // heuristic the loader used to use locally.
-        const baseName =
-          sorted[0].family_base_name ??
-          sorted[0].display_name ??
-          sorted[0].blueprint_record_guid;
-        const expandKey =
-          "bundle:" + sorted.map((b) => b.blueprint_record_guid).slice().sort().join(",");
         out.push({
           kind: "bundle",
           baseName,
-          bps: sorted,
+          items: sorted,
           sortName: baseName,
-          expandKey,
-          recipe: sorted[0].recipe,
+          expandKey: "bundle:" + sorted.map((c) => c.entityKey).slice().sort().join(","),
+          recipe: sorted[0].rep.recipe,
         });
       }
     }
-    for (const bp of unkeyed) {
+    for (const c of unkeyed) {
       out.push({
         kind: "leaf",
-        bp,
-        sortName: bp.display_name ?? bp.blueprint_record_guid,
+        item: c,
+        baseName: nameOf(c.rep),
+        sortName: nameOf(c.rep),
       });
     }
     out.sort((a, b) => a.sortName.localeCompare(b.sortName));
@@ -216,8 +268,8 @@
 
   // Two-level grouping by sc-crafting Category (primary axis) and the
   // AttachDef item_type / sub_type (secondary axis). Within each
-  // subgroup, BPs are bundled by recipe signature so skin variants
-  // (same recipe, different name) collapse to one row. See
+  // subgroup, BPs are collapsed by crafted entity and bundled by model
+  // so skin variants and duplicate blueprints fold into one row. See
   // `bundleItems` above.
   type SubGroup = { sub: string; subOrder: number; items: GroupItem[]; rawCount: number };
   type MainGroup = {
@@ -277,10 +329,29 @@
     return out;
   });
 
-  /** Owned-variant count for a bundle, reactive on `owned`. */
+  /** A craftable is owned if ANY of its interchangeable BPs is owned. */
+  function craftableOwned(c: Craftable): boolean {
+    for (const g of c.bpGuids) if (owned.has(g)) return true;
+    return false;
+  }
+
+  /** Toggle a craftable's ownership, entity-level (all-or-nothing). When an
+   *  item is craftable by several interchangeable BPs, the user can't tell
+   *  them apart — in-game they only see the result item — so "owned" means
+   *  "I own a BP that crafts this", and we mark/clear every BP together. This
+   *  keeps the set internally consistent (no arbitrary "which record", no
+   *  partial state) since the read side already treats any-owned as owned. */
+  async function toggleCraftable(c: Craftable) {
+    const ownedGuids = c.bpGuids.filter((g) => owned.has(g));
+    // Owned → clear all; unowned → mark all.
+    const targets = ownedGuids.length > 0 ? ownedGuids : c.bpGuids;
+    for (const g of targets) await toggleOwned(g);
+  }
+
+  /** Owned-variant count for a bundle (craftables, not BPs), reactive on `owned`. */
   function bundleOwnedCount(b: Bundle): number {
     let n = 0;
-    for (const bp of b.bps) if (owned.has(bp.blueprint_record_guid)) n++;
+    for (const c of b.items) if (craftableOwned(c)) n++;
     return n;
   }
 
@@ -356,28 +427,36 @@
               </div>
             {/if}
             <ul>
-              {#each subGroup.items as item, i (item.kind === "leaf" ? item.bp.blueprint_record_guid : item.expandKey)}
+              {#each subGroup.items as item (item.kind === "leaf" ? item.item.entityKey : item.expandKey)}
                 {#if item.kind === "leaf"}
-                  {@const bp = item.bp}
-                  {@const isOwned = owned.has(bp.blueprint_record_guid)}
-                  {@const isExpanded = expanded.has(bp.blueprint_record_guid)}
+                  {@const c = item.item}
+                  {@const bp = c.rep}
+                  {@const isOwned = craftableOwned(c)}
+                  {@const isExpanded = expanded.has(c.entityKey)}
                   <li class:owned={isOwned} class:expanded={isExpanded}>
                     <div class="bp-row">
-                      <button
-                        class="own-toggle"
-                        class:on={isOwned}
-                        title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
-                        onclick={() => toggleOwned(bp.blueprint_record_guid)}
-                      >
-                        {isOwned ? "✓" : ""}
-                      </button>
+                      <!-- Fixed-width status column so leaf checkmarks line up
+                           with bundle "x/y" counts (same 2.4rem footprint). -->
+                      <span class="own-col">
+                        <button
+                          class="own-toggle"
+                          class:on={isOwned}
+                          title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
+                          onclick={() => toggleCraftable(c)}
+                        >
+                          {isOwned ? "✓" : ""}
+                        </button>
+                      </span>
                       <button
                         class="bp-expand"
                         title={isExpanded ? "Hide recipe" : "Show recipe"}
-                        onclick={() => toggleExpanded(bp.blueprint_record_guid)}
+                        onclick={() => toggleExpanded(c.entityKey)}
                       >
                         <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
-                        <span class="bp-name">{bp.display_name ?? bp.blueprint_record_guid}</span>
+                        <span class="bp-name">{item.baseName}</span>
+                        {#if c.bpGuids.length > 1}
+                          <span class="dup-tag" title="{c.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{c.bpGuids.length} BPs</span>
+                        {/if}
                         {#if bp.display_name}
                           <span class="bp-guid">{bp.blueprint_record_guid}</span>
                         {/if}
@@ -428,7 +507,7 @@
                   {@const bundle = item}
                   {@const isExpanded = expanded.has(bundle.expandKey)}
                   {@const ownedN = bundleOwnedCount(bundle)}
-                  {@const totalN = bundle.bps.length}
+                  {@const totalN = bundle.items.length}
                   {@const allOwned = ownedN === totalN}
                   {@const someOwned = ownedN > 0}
                   <li class:expanded={isExpanded} class:bundle-owned={allOwned} class:bundle-some={someOwned && !allOwned}>
@@ -477,22 +556,24 @@
                           </ul>
                         {/if}
                         <div class="variant-list">
-                          {#each bundle.bps as vbp (vbp.blueprint_record_guid)}
-                            {@const vOwned = owned.has(vbp.blueprint_record_guid)}
-                            {@const fullName = vbp.display_name ?? vbp.blueprint_record_guid}
-                            {@const suffix = variantSuffix(fullName, bundle.baseName)}
+                          {#each bundle.items as vc (vc.entityKey)}
+                            {@const vOwned = craftableOwned(vc)}
+                            {@const suffix = variantSuffix(nameOf(vc.rep), bundle.baseName)}
                             {@const isBase = suffix === "Standard"}
                             <div class="variant" class:owned={vOwned}>
                               <button
                                 class="own-toggle"
                                 class:on={vOwned}
                                 title={vOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
-                                onclick={() => toggleOwned(vbp.blueprint_record_guid)}
+                                onclick={() => toggleCraftable(vc)}
                               >
                                 {vOwned ? "✓" : ""}
                               </button>
                               <span class="variant-name" class:base={isBase}>{suffix}</span>
-                              <span class="bp-guid">{vbp.blueprint_record_guid}</span>
+                              {#if vc.bpGuids.length > 1}
+                                <span class="dup-tag" title="{vc.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{vc.bpGuids.length} BPs</span>
+                              {/if}
+                              <span class="bp-guid">{vc.rep.blueprint_record_guid}</span>
                               <div class="wish-group">
                                 {#if !vOwned}
                                   <span class="wish soon" title="Want blueprint — coming in a later version">⚐</span>
@@ -719,6 +800,14 @@
     gap: 0.8rem;
     padding: 0.5rem 0.6rem;
   }
+  /* Status column — same 2.4rem footprint as a bundle's "x/y" count, so
+     leaf checkmarks and bundle counts share one left edge and the names
+     below them line up. The checkmark stays its 1.4rem square, centred. */
+  .own-col {
+    flex: 0 0 2.4rem;
+    display: grid;
+    place-items: center;
+  }
   .own-toggle {
     width: 1.4rem;
     height: 1.4rem;
@@ -795,6 +884,17 @@
     padding: 0.1rem 0.45rem;
     border-radius: 999px;
     background: var(--panel-2);
+  }
+  /* Marker for an item craftable by several interchangeable blueprints. */
+  .dup-tag {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
+    font-variant-numeric: tabular-nums;
   }
   .wish-group {
     display: flex;
