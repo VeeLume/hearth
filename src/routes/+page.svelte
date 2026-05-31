@@ -35,8 +35,8 @@
   // shares `Armor / FPS / Set / ClarkeDefense / FBL-8a`.
   //
   // The loader resolves that tag once per BP and ships it as
-  // `bp.model_id`. We bundle BPs by (subgroup × model_id): same
-  // model_id within a subgroup ⇒ one collapsible row. The fallback
+  // `bp.family_id`. We bundle BPs by (subgroup × family_id): same
+  // family_id within a subgroup ⇒ one collapsible row. The fallback
   // when an entity has no recognised model tag is the crafted-entity
   // GUID, so BPs that share an entity (multiple recipes for the same
   // item, e.g. Cryo-Star SL) also bundle, while unique items stay as
@@ -68,15 +68,15 @@
 
   function bundleItems(items: BpView[]): GroupItem[] {
     const byModel = new Map<string, BpView[]>();
-    const unkeyed: BpView[] = []; // BPs with no model_id — render as singletons
+    const unkeyed: BpView[] = []; // BPs with no family_id — render as singletons
     for (const bp of items) {
-      if (!bp.model_id) {
+      if (!bp.family_id) {
         unkeyed.push(bp);
         continue;
       }
-      const arr = byModel.get(bp.model_id) ?? [];
+      const arr = byModel.get(bp.family_id) ?? [];
       arr.push(bp);
-      byModel.set(bp.model_id, arr);
+      byModel.set(bp.family_id, arr);
     }
 
     const out: GroupItem[] = [];

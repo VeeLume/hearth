@@ -67,17 +67,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use hearth_core::{BpView, Platform};
-use sc_holotable::asset::generated::{
-    DataForgeComponentParamsPtr, EntityClassDefinition, RecordLookup, SItemDefinition,
-};
 use sc_holotable::asset::{
-    AssetConfig, AssetData, AssetSource, DataPools, Datacore, ExtractSnapshot, Guid, LocaleMap,
-    ProcessedSnapshot, RecordPaths, RecordStore, SnapshotCaptureConfig,
-    snapshot_meta_from_install,
+    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
+    RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
 };
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
-use sc_holotable::items::Items;
+use sc_holotable::items::{ItemFamilies, Items};
 use sc_holotable::resources::Resources;
 use sc_holotable::tags::Tags;
 
@@ -88,7 +84,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 7;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 8;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -393,28 +389,27 @@ fn group_for(channel: Channel) -> Platform {
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     // Index passes over the same datacore:
-    //   - Items       — entity name keys + typed Type/SubType
-    //   - Blueprints  — the full crafting catalog (Blueprint + tier-0 Recipe)
-    //   - Resources   — name_key + density for each ResourceType
-    //   - RecordPaths — Categories::build needs the path/name lookup
-    //                   (categories are empty marker records — identity
-    //                   is the record's name, exposed via RecordPaths)
-    //   - Categories  — CIG-authored crafting taxonomy (20 entries in
-    //                   SC 4.8: FPSWeapons, FPSArmours, Medical,
-    //                   VehicleWeaponsS1-6, ...)
+    //   - Items        — entity name keys + typed Type/SubType
+    //   - Blueprints   — the full crafting catalog (Blueprint + tier-0 Recipe)
+    //   - Resources    — name_key + density for each ResourceType
+    //   - RecordPaths  — Categories::build needs the path/name lookup
+    //                    (categories are empty marker records — identity
+    //                    is the record's name, exposed via RecordPaths)
+    //   - Categories   — CIG-authored crafting taxonomy (20 entries in
+    //                    SC 4.8: FPSWeapons, FPSArmours, Medical,
+    //                    VehicleWeaponsS1-6, ...)
+    //   - Tags         — needed by ItemFamilies for tag-path lookups
+    //   - ItemFamilies — variant grouping (paint / skin / "Modified"
+    //                    variants of one model share a family id)
     // Items is the only index that's also passed downstream (Blueprints
-    // needs it to bake the crafted-entity name).
+    // and ItemFamilies both need it).
     let items = Items::build(datacore.records());
     let catalog = Blueprints::build(datacore, &items);
     let resources = Resources::build(datacore.records());
     let paths = RecordPaths::build(datacore);
     let categories = Categories::build(&paths);
-    // Tag tree — needed to compute model_id (variant bundling key).
-    // Each crafted-entity carries a Vec<Guid> of tag refs; we look for
-    // one whose path matches a known model-tag prefix (e.g.
-    // `Weapon / FPS / Pistol / <Model>`) and use that path as the
-    // shared identity across variants. See compute_model_id below.
     let tags = Tags::build(datacore.records());
+    let families = ItemFamilies::build(&items, &tags, datacore.records());
 
     let mut out = Vec::new();
     for blueprint in catalog.iter() {
@@ -448,9 +443,18 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                     .to_owned(),
             );
         }
-        // Variant-bundling key — see compute_model_id docs.
+        // Variant-bundling key — ItemFamilies returns a family id when
+        // the entity has a recognised model signal (tag-tree path or
+        // SItemDefinition.tags first specific token). Fall back to the
+        // entity GUID so same-entity multi-BP cases (e.g. Cryo-Star
+        // coolers) still bundle and distinct items stay singletons.
         if let Some(entity_guid) = blueprint.crafted_entity_guid() {
-            view.model_id = Some(compute_model_id(entity_guid, datacore.records(), &tags));
+            view.family_id = Some(
+                families
+                    .family_id_of(&entity_guid)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity_guid.to_string()),
+            );
         }
         // Resolve resource_name on each ingredient (bp_view leaves it
         // None because it has no Resources/LocaleMap access).
@@ -460,153 +464,6 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
         out.push(view);
     }
     out
-}
-
-/// One whitelisted model-tag prefix and the model identity depth that
-/// follows it. The model id = prefix segments + `model_depth`
-/// additional segments. Sub-variant markers deeper than that get
-/// truncated, so e.g.
-/// `Weapon / FPS / Stocked / SniperRifle / Atzkav / AtzkavDE` (6 segs)
-/// truncates to the 5-seg `… / Atzkav` so the "Deadeye" special
-/// edition bundles with the base Atzkav.
-///
-/// For armor, the model identity spans **two** post-prefix segments
-/// (brand + model leaf), e.g. `Armor / FPS / Set / ClarkeDefense /
-/// FBL-8a` — both ClarkeDefense and FBL-8a together form the identity.
-#[derive(Copy, Clone)]
-struct ModelPrefix {
-    prefix: &'static str,
-    model_depth: usize,
-}
-
-/// Whitelisted model-tag families. Verified against SC 4.8 via the
-/// `probe_variants` example. Each prefix REQUIRES content after the
-/// trailing slash so generic category markers don't match.
-const MODEL_PREFIXES: &[ModelPrefix] = &[
-    // FPS handheld weapons — `Weapon / FPS / <Class> / <Model>`.
-    ModelPrefix { prefix: "Weapon / FPS / Pistol / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / SMG / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Shotgun / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Sniper / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / LMG / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / HMG / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Cannon / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Launcher / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Mining / ", model_depth: 1 },
-    // FPS shoulder/stocked weapons —
-    // `Weapon / FPS / Stocked / <Class> / <Model>`.
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / Rifle / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / SniperRifle / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / Shotgun / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / SMG / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / LMG / ", model_depth: 1 },
-    ModelPrefix { prefix: "Weapon / FPS / Stocked / HMG / ", model_depth: 1 },
-    // FPS Armor — `Armor / FPS / Set / <Brand> / <Model>`. Brand +
-    // model leaf together form the identity. Some armor sets ship
-    // with ONLY the 3-segment `Armor / FPS / Set` marker (no Brand /
-    // Model leaf) — those fall through to the item.tags signal below.
-    ModelPrefix { prefix: "Armor / FPS / Set / ", model_depth: 2 },
-];
-
-/// Compute the bundle key for a crafted entity via a priority chain.
-/// Each layer answers a slightly different shape of "what is this
-/// item's identity for bundling purposes":
-///
-/// 1. **ECD model tag** — the canonical signal when present. Pattern
-///    `Weapon / FPS / Pistol / Coda` (4 segs) or
-///    `Weapon / FPS / Stocked / SniperRifle / A03` (5 segs) or
-///    `Armor / FPS / Set / ClarkeDefense / FBL-8a` (5 segs). Path-equal
-///    across all paints / "Modified" / linked attachments of one model.
-/// 2. **SItemDefinition.tags first token** — catches armor sets like
-///    Corbel that ship with only the generic `Armor / FPS / Set` marker
-///    (no specific brand/model leaf). The first whitespace-delimited
-///    token (e.g. `"omc_utility_heavy"`) is the set identifier when it
-///    contains an underscore — that filters out generic strings like
-///    `"pistol"` / `"stocked"` that several thousand items share.
-/// 3. **Entity GUID** — bundles same-entity multi-BP cases (the three
-///    Cryo-Star SL cooler blueprints) and keeps anything truly distinct
-///    as a singleton.
-fn compute_model_id(entity_guid: Guid, records: &RecordStore, tags: &Tags) -> String {
-    let Some(handle) = EntityClassDefinition::lookup(&records.records, &entity_guid) else {
-        return entity_guid.to_string();
-    };
-    let Some(ecd) = handle.get(&records.pools) else {
-        return entity_guid.to_string();
-    };
-
-    // 1. ECD model tag — first one matching a whitelisted prefix,
-    //    TRUNCATED to the model depth so sub-variant markers like
-    //    `… / Atzkav / AtzkavDE` collapse to `… / Atzkav`.
-    for tag_guid in &ecd.tags {
-        let path_segments = tags.path(tag_guid);
-        if path_segments.is_empty() {
-            continue;
-        }
-        let path = path_segments.join(" / ");
-        for entry in MODEL_PREFIXES {
-            if !path.starts_with(entry.prefix) {
-                continue;
-            }
-            // Prefix segment count = the number of "X / " chunks
-            // before the trailing slash (e.g. `Weapon / FPS / Pistol /`
-            // → 3 segments: Weapon, FPS, Pistol).
-            let prefix_seg_count = entry
-                .prefix
-                .trim_end_matches(" / ")
-                .split(" / ")
-                .count();
-            let total = prefix_seg_count + entry.model_depth;
-            // Path must have at least the model segments after the
-            // prefix (otherwise the tag was just the prefix itself,
-            // which shouldn't match anyway thanks to the trailing
-            // slash — defensive).
-            if path_segments.len() < total {
-                continue;
-            }
-            return path_segments[..total].join(" / ");
-        }
-    }
-
-    // 2. SItemDefinition.tags — the model identifier is the FIRST
-    //    whitespace-separated token that looks specific:
-    //      - contains an underscore (filters out plain words like
-    //        "stocked" / "pistol" / "sniper")
-    //      - isn't a parametric variant marker (Set_01 / Color_02 /
-    //        Texture_03 etc. — those identify VARIANTS, not models)
-    //    For Novian Crossbow this skips past "stocked" to land on
-    //    "utfl_crossbow_ballistic_01". For Corbel Helmet it picks
-    //    "omc_utility_heavy" directly. For Tailwind Flight Helmet
-    //    it skips past Set_01/Texture_03/Color_01 to "vgl_flightsuit_helmet".
-    if let Some(item_def) = find_item_def(ecd, &records.pools) {
-        let first_specific = item_def.tags.split_whitespace().find(|t| {
-            t.contains('_')
-                && !t.starts_with("Set_")
-                && !t.starts_with("Color_")
-                && !t.starts_with("Texture_")
-        });
-        if let Some(token) = first_specific {
-            return format!("item-tag:{token}");
-        }
-    }
-
-    // 3. Entity GUID fallback.
-    entity_guid.to_string()
-}
-
-/// Find the first `SItemDefinition` reachable through an entity's
-/// `SAttachableComponentParams` component — same walk sc-items uses
-/// internally to build the `Items` cache. Lives here (mirrored)
-/// because the SItemDefinition.tags field isn't on the cooked `Item`
-/// surface.
-fn find_item_def<'a>(
-    ecd: &EntityClassDefinition,
-    pools: &'a DataPools,
-) -> Option<&'a SItemDefinition> {
-    let attachable = ecd.components.iter().find_map(|c| match c {
-        DataForgeComponentParamsPtr::SAttachableComponentParams(h) => h.get(pools),
-        _ => None,
-    })?;
-    attachable.attach_def.and_then(|h| h.get(pools))
 }
 
 /// Fill `Ingredient.resource_name` for each ingredient by looking up
@@ -632,6 +489,7 @@ fn fill_resource_names(
         }
     }
 }
+
 
 fn build_locale_map(bytes: &[u8]) -> Result<LocaleMap> {
     let (decoded, _, had_errors) = encoding_rs::UTF_16LE.decode(bytes);
