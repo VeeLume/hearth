@@ -84,7 +84,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 9;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 10;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -447,11 +447,10 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                     .to_owned(),
             );
         }
-        // Variant-bundling key — ItemFamilies returns a family id when
-        // the entity has a recognised model signal (tag-tree path or
-        // SItemDefinition.tags first specific token). Fall back to the
-        // entity GUID so same-entity multi-BP cases (e.g. Cryo-Star
-        // coolers) still bundle and distinct items stay singletons.
+        // Variant-bundling key — ItemFamilies always returns Some for
+        // items in the catalog (the solo fallback covers items with
+        // no other signal), so this only falls back when the BP has
+        // no crafted entity at all.
         if let Some(entity_guid) = blueprint.crafted_entity_guid() {
             view.family_id = Some(
                 families
@@ -459,6 +458,20 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity_guid.to_string()),
             );
+
+            // Family base name — resolved through Items + LocaleMap so
+            // the catalog UI's bundle row header reads the canonical
+            // base item's name even when only variants are blueprinted.
+            // All members of one family resolve to the same base name
+            // here; the small redundant work per-BP is cheaper than
+            // restructuring the loop to pre-compute per-family.
+            if let Some(base_guid) = families.base_of(&entity_guid)
+                && let Some(name_key) = items.name_key(&base_guid)
+                && let Some(name) = locale.resolve(name_key)
+                && !name.is_empty()
+            {
+                view.family_base_name = Some(name.to_owned());
+            }
         }
         // Resolve resource_name on each ingredient (bp_view leaves it
         // None because it has no Resources/LocaleMap access).

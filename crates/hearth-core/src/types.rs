@@ -198,16 +198,22 @@ pub struct BpView {
     /// Stable identity key used by the UI to bundle skin / paint /
     /// special-edition variants of the same base item under a single
     /// collapsible row. Comes from
-    /// [`sc_holotable::items::ItemFamilies::family_id_of`] — for FPS
-    /// weapons a tag path like `"Weapon / FPS / Pistol / Coda"`, for
-    /// FPS armor `"Armor / FPS / Set / ClarkeDefense / FBL-8a"`, or an
-    /// `"item-tag:<token>"` value for items whose ECD only carries a
-    /// generic category marker. Falls back to the crafted entity GUID
-    /// for items without any recognised family signal (so same-entity
-    /// multi-BP cases like Cryo-Star coolers still bundle, while
-    /// genuinely distinct items stay as singletons). `None` only when
-    /// the BP has no crafted entity at all.
+    /// [`sc_holotable::items::ItemFamilies::family_id_of`] — a tag-tree
+    /// path (`"Weapon / FPS / Pistol / Coda"`), a stem-scoped key
+    /// (`"stem:kap_combat_heavy_core:Char_Armor_Torso:UNDEFINED"`), or
+    /// a `"solo:<guid>"` for items with no other signal. `None` only
+    /// when the BP has no crafted entity at all.
     pub family_id: Option<String>,
+    /// Display name of the family's **base** item — the canonical
+    /// unstyled variant identified by [`sc_holotable::items::Family::base`].
+    /// Shared across every BpView in a family; used by the catalog UI
+    /// as the bundle row header so the row reads the base item's name
+    /// even when only variants are blueprinted (the base item itself
+    /// might have no recipe). `None` when the BP has no crafted
+    /// entity, or when the base entity has no resolvable display name
+    /// — the UI then falls back to the shortest blueprinted name in
+    /// the bundle.
+    pub family_base_name: Option<String>,
     /// Crafting recipe — ingredients + craft time. `None` when the
     /// blueprint has no recipe (rare; happens when the cost tree is a
     /// dormant variant the live data doesn't populate) or when the

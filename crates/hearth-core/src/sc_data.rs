@@ -36,6 +36,7 @@ pub fn bp_view(blueprint: &Blueprint) -> BpView {
         item_sub_type: None,
         category_raw: None,
         family_id: None,
+        family_base_name: None,
         recipe: project_recipe(blueprint),
     }
 }

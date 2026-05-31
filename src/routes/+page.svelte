@@ -94,7 +94,15 @@
           const lb = (b.display_name ?? b.blueprint_record_guid).length;
           return la - lb || (a.display_name ?? "").localeCompare(b.display_name ?? "");
         });
-        const baseName = sorted[0].display_name ?? sorted[0].blueprint_record_guid;
+        // Bundle header = base item's name from sc-items::ItemFamilies
+        // (resolved server-side and shipped on every member as
+        // `family_base_name`). Falls back to the shortest blueprinted
+        // display name when the base has no resolvable name — same
+        // heuristic the loader used to use locally.
+        const baseName =
+          sorted[0].family_base_name ??
+          sorted[0].display_name ??
+          sorted[0].blueprint_record_guid;
         const expandKey =
           "bundle:" + sorted.map((b) => b.blueprint_record_guid).slice().sort().join(",");
         out.push({
