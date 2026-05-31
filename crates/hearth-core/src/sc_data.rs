@@ -11,29 +11,25 @@
 //! to call the adapters here.
 
 use sc_holotable::asset::Guid;
-use sc_holotable::missions::{BlueprintPool, BlueprintPoolEntry};
+use sc_holotable::crafting::Blueprint;
 
 use crate::types::BpView;
 
-/// Convert a `BlueprintPoolEntry` (with its containing pool) to the lean
-/// `BpView` shape sent across the Tauri IPC boundary.
+/// Convert a `sc_crafting::Blueprint` to the lean `BpView` shape sent
+/// across the Tauri IPC boundary.
 ///
 /// Display name + item classification are intentionally not resolved here —
 /// they require a `LocaleMap` / `Items` index which are heavy load-time
 /// concerns. The loader fills `display_name` / `item_type` / `item_sub_type`
 /// after construction; keeping this adapter pure (conversions only) bounds
 /// the sc-holotable blast radius to this module.
-pub fn bp_view(entry: &BlueprintPoolEntry, pool: &BlueprintPool) -> BpView {
-    let blueprint = &entry.blueprint;
+pub fn bp_view(blueprint: &Blueprint) -> BpView {
     BpView {
-        pool_guid: guid_string(&pool.guid),
-        pool_name: pool.name.clone(),
         blueprint_record_guid: guid_string(&blueprint.blueprint_record_guid),
         crafted_entity_guid: blueprint.crafted_entity_guid().as_ref().map(guid_string),
         display_name: None,
         item_type: None,
         item_sub_type: None,
-        weight: entry.weight,
     }
 }
 

@@ -159,15 +159,20 @@ pub struct WishlistEntry {
     pub added_at: DateTime<Utc>,
 }
 
-/// Lean view of a blueprint-pool entry for the catalog UI.
+/// Lean view of a craftable blueprint for the catalog UI.
 ///
 /// Constructed by `sc_data::bp_view`. All GUIDs are rendered as their
 /// hex-string form for the IPC boundary — the Svelte side never sees a
 /// raw `Guid`.
+///
+/// The catalog source is the full `sc_crafting::Blueprints` index, not
+/// the mission-reward pool registry — every craftable blueprint
+/// appears, including default-unlocked ones (P4-AR, basic dismantle,
+/// etc) that are in no pool. Mission-pool data (pool_guid, pool_name,
+/// drop weight) is a *mission-reward* mechanic and lives in the future
+/// Missions view, not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct BpView {
-    pub pool_guid: String,
-    pub pool_name: String,
     pub blueprint_record_guid: String,
     pub crafted_entity_guid: Option<String>,
     /// Resolved display name. `None` when LocaleMap doesn't resolve;
@@ -181,5 +186,4 @@ pub struct BpView {
     /// Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
     /// Available for finer sub-grouping; not all items set it.
     pub item_sub_type: Option<String>,
-    pub weight: f32,
 }

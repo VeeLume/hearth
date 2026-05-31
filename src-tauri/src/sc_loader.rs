@@ -71,9 +71,9 @@ use sc_holotable::asset::{
     AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
     SnapshotCaptureConfig, snapshot_meta_from_install,
 };
+use sc_holotable::crafting::{Blueprints, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::Items;
-use sc_holotable::missions::BlueprintPools;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -82,7 +82,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 1;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 2;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -387,36 +387,33 @@ fn group_for(channel: Channel) -> Platform {
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     // The per-entity item index (display-name keys + typed Type/SubType).
-    // Since v0.8 this is an explicit build over the record store rather
-    // than a field on the (now-removed) datacore snapshot.
     let items = Items::build(datacore.records());
-    // Reward pools, resolved against the sc-crafting blueprint catalog.
-    let pools = BlueprintPools::build(datacore, &items);
+    // The full sc-crafting blueprint catalog — every craftable BP in
+    // the DCB, not just those reachable from mission reward pools.
+    // This is what the catalog UI shows; pools are a mission-reward
+    // mechanic and live in the future Missions view.
+    let catalog = Blueprints::build(datacore, &items);
 
-    // A blueprint crafts exactly one item, but the same blueprint can
-    // appear in several reward pools — so iterating pools yields duplicate
-    // entries per blueprint_record_guid. The catalog wants each blueprint
-    // once; dedup by record GUID, keeping the first sighting.
     let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for pool in pools.iter() {
-        for entry in &pool.items {
-            let mut view = hearth_core::sc_data::bp_view(entry, pool);
-            if !seen.insert(view.blueprint_record_guid.clone()) {
-                continue;
-            }
-            view.display_name = entry.blueprint.display_name(locale).map(|s| s.to_owned());
-            if let Some(entity_guid) = entry.blueprint.crafted_entity_guid() {
-                // item_type/item_sub_type are now typed enums; the IPC
-                // boundary carries their DCB-string form (what itemTypes.ts
-                // already keys on).
-                view.item_type = items.item_type(&entity_guid).map(|t| t.as_dcb_str().to_owned());
-                view.item_sub_type = items
-                    .item_sub_type(&entity_guid)
-                    .map(|t| t.as_dcb_str().to_owned());
-            }
-            out.push(view);
+    for blueprint in catalog.iter() {
+        // Filter to Creation blueprints — the ones that craft a real
+        // entity. Dormant non-Creation processes (refining/repair/etc
+        // — all 0 records in SC 4.8 but the schema reserves them)
+        // would surface here with no crafted_entity_guid; skip them.
+        if !matches!(blueprint.process, Process::Creation { .. }) {
+            continue;
         }
+        let mut view = hearth_core::sc_data::bp_view(blueprint);
+        view.display_name = blueprint.display_name(locale).map(|s| s.to_owned());
+        if let Some(entity_guid) = blueprint.crafted_entity_guid() {
+            // item_type/item_sub_type are typed enums; the IPC boundary
+            // carries their DCB-string form (what itemTypes.ts keys on).
+            view.item_type = items.item_type(&entity_guid).map(|t| t.as_dcb_str().to_owned());
+            view.item_sub_type = items
+                .item_sub_type(&entity_guid)
+                .map(|t| t.as_dcb_str().to_owned());
+        }
+        out.push(view);
     }
     out
 }

@@ -75,8 +75,9 @@ async removeFromWishlist(blueprintGuid: string) : Promise<Result<boolean, AppErr
 },
 /**
  * Surface the active platform + channel + account so the UI can show
- * "PU · LIVE · @VeeLume" or similar. Triggers the bootstrap if needed
- * (loads SC data + inserts the account row if missing).
+ * "PU · LIVE · @VeeLume" or similar. Fast — needs only discovery + db,
+ * not the catalog, so the sidebar renders without waiting on the DCB
+ * parse.
  */
 async activeScope() : Promise<Result<ActiveScope, AppError>> {
     try {
@@ -170,13 +171,20 @@ account_hint: number | null; created_at: string }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
 export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
 /**
- * Lean view of a blueprint-pool entry for the catalog UI.
+ * Lean view of a craftable blueprint for the catalog UI.
  * 
  * Constructed by `sc_data::bp_view`. All GUIDs are rendered as their
  * hex-string form for the IPC boundary — the Svelte side never sees a
  * raw `Guid`.
+ * 
+ * The catalog source is the full `sc_crafting::Blueprints` index, not
+ * the mission-reward pool registry — every craftable blueprint
+ * appears, including default-unlocked ones (P4-AR, basic dismantle,
+ * etc) that are in no pool. Mission-pool data (pool_guid, pool_name,
+ * drop weight) is a *mission-reward* mechanic and lives in the future
+ * Missions view, not here.
  */
-export type BpView = { pool_guid: string; pool_name: string; blueprint_record_guid: string; crafted_entity_guid: string | null; 
+export type BpView = { blueprint_record_guid: string; crafted_entity_guid: string | null; 
 /**
  * Resolved display name. `None` when LocaleMap doesn't resolve;
  * UI should fall back to the GUID.
@@ -193,7 +201,7 @@ item_type: string | null;
  * Raw `AttachDef.SubType` (e.g. `"Rifle"`). `None` on most items.
  * Available for finer sub-grouping; not all items set it.
  */
-item_sub_type: string | null; weight: number }
+item_sub_type: string | null }
 /**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be
