@@ -394,7 +394,10 @@
                         {#if bp.recipe}
                           {#if bp.recipe.ingredients.length > 0}
                             <ul class="ingredients">
-                              {#each bp.recipe.ingredients as ing (ing.resource_guid)}
+                              <!-- Composite key with index: some recipes legitimately list
+                                   the same resource GUID twice (different piles / qualities),
+                                   so the bare GUID isn't unique. -->
+                              {#each bp.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
                                 <li class="ingredient">
                                   <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
                                   <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
@@ -454,7 +457,7 @@
                       <div class="recipe-panel">
                         {#if bundle.recipe && bundle.recipe.ingredients.length > 0}
                           <ul class="ingredients">
-                            {#each bundle.recipe.ingredients as ing (ing.resource_guid)}
+                            {#each bundle.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
                               <li class="ingredient">
                                 <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
                                 <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
