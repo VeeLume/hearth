@@ -24,11 +24,11 @@ Currently in **v1** (personal desktop tool). v1 ships with no backend, no auth, 
 
 ## Cross-repo deps
 
-- `sc-holotable` (sc-contracts, sc-installs, sc-extract, sc-weapons) — pinned to tag `sc-holotable/v0.7.0` in workspace Cargo.toml. Bump deliberately when SC data needs change. For cross-repo iteration, add a local `[patch."https://github.com/VeeLume/sc-holotable.git"]` pointing at `../sc-holotable/crates/*`, then remove it once the new tag is pushed and the pin is bumped.
+- `sc-holotable` — the umbrella crate, pinned to tag `sc-holotable/v0.9.0` in workspace Cargo.toml with `features = ["installs", "extract", "items", "missions", "crafting"]`. One pin + feature flags instead of naming the leaf crates (`sc-discovery`/`sc-extract`/`sc-items`/`sc-missions`/`sc-crafting`) and their sc-extract leaf features. Access goes through the umbrella’s feature-gated modules: `sc_holotable::install` (discovery), `::asset` (sc-extract), `::items`, `::missions`, `::crafting`, plus `::prelude`. Bump deliberately when SC data needs change. For cross-repo iteration, add a local `[patch."https://github.com/VeeLume/sc-holotable.git"]` pointing at `../sc-holotable/crates/*`, then remove it once the new tag is pushed and the pin is bumped.
 - `sc-langpatch` consumes `hearth-export` (path dep when developed in parallel).
 
 ## Things not to do
 
 - Don't write to SC's `global.ini` or `Data.p4k`. That's sc-langpatch's job. Hearth is read-only on game files.
-- Don't extract SC data ad-hoc. Add types to sc-holotable instead, then consume from there. This pattern is established (sc-contracts originated in sc-langpatch and was lifted).
+- Don't extract SC data ad-hoc. Add types to sc-holotable instead, then consume from there. This pattern is established (the blueprint types originated in sc-langpatch and were lifted).
 - Don't add features beyond the current roadmap stage without updating the vault note first.

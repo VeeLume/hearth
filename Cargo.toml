@@ -38,11 +38,12 @@ specta = { version = "2.0.0-rc.21", features = ["chrono", "uuid", "derive"] }
 specta-typescript = "0.0.9"
 tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 
-# sc-holotable family (pin matches sc-langpatch v0.5.0 so cross-repo work shares the same SC data shapes)
-sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0", features = ["contracts", "servicebeacon", "entities"] }
-sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.7.0" }
+# sc-holotable umbrella crate. One pin + feature flags instead of naming the
+# leaf crates and their sc-extract leaf features. `installs`/`extract`/`items`
+# are what the loader touches directly; `missions` brings BlueprintPools and
+# `crafting` brings the Blueprint catalog they resolve against. (extract/items
+# are pulled transitively by missions/crafting, but listed for clarity.)
+sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.9.0", features = ["installs", "extract", "items", "missions", "crafting"] }
 
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }
@@ -70,7 +71,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sc-extract]
 opt-level = 3
-[profile.dev.package.sc-contracts]
+[profile.dev.package.sc-missions]
+opt-level = 3
+[profile.dev.package.sc-crafting]
 opt-level = 3
 
 # Generated giant-match crate — keep at 1 per sc-langpatch's note.

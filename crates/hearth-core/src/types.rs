@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// polluting PU state.
 ///
 /// Storage form is the lowercase string (`'prod'` / `'ptu'`) — same as
-/// what `sc_installs::Installation::platform_id` produces.
+/// what `sc_discovery::Installation::platform_id` produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
@@ -43,7 +43,7 @@ impl Platform {
         }
     }
 
-    /// Parse from the storage form ("prod" / "ptu") or from sc-installs'
+    /// Parse from the storage form ("prod" / "ptu") or from sc-discovery's
     /// `Installation::platform_id` value (same shape). Inherent rather
     /// than `FromStr` because we want `Option` (unknown variants are
     /// soft failures), not `Result`.
@@ -121,7 +121,7 @@ pub struct Account {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct OwnedBlueprint {
     pub id: RecordId,
-    /// `Guid` from sc-extract, rendered as the hex string `sc-contracts`
+    /// `Guid` from sc-extract, rendered as the hex string sc-holotable
     /// uses externally. String here so the type stays serde/specta-friendly
     /// without pulling sc-extract into the IPC layer.
     pub blueprint_guid: String,
@@ -159,7 +159,7 @@ pub struct WishlistEntry {
     pub added_at: DateTime<Utc>,
 }
 
-/// Lean view of a sc-contracts `BlueprintItem` for the catalog UI.
+/// Lean view of a blueprint-pool entry for the catalog UI.
 ///
 /// Constructed by `sc_data::bp_view`. All GUIDs are rendered as their
 /// hex-string form for the IPC boundary — the Svelte side never sees a

@@ -47,7 +47,6 @@ hearth-core.workspace = true
 hearth-storage.workspace = true
 hearth-export.workspace = true
 
-# SC data — consumed via hearth-core::sc_data adapter (Stage 2 wires real loading).
-sc-installs.workspace = true
-sc-extract.workspace = true
-sc-contracts.workspace = true
+# SC data — the loader (sc_loader.rs) uses install discovery + asset/datacore
+# parsing + the items/missions/crafting indices, all via the umbrella.
+sc-holotable.workspace = true

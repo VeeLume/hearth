@@ -170,7 +170,7 @@ account_hint: number | null; created_at: string }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
 export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
 /**
- * Lean view of a sc-contracts `BlueprintItem` for the catalog UI.
+ * Lean view of a blueprint-pool entry for the catalog UI.
  * 
  * Constructed by `sc_data::bp_view`. All GUIDs are rendered as their
  * hex-string form for the IPC boundary — the Svelte side never sees a
@@ -202,7 +202,7 @@ item_sub_type: string | null; weight: number }
  */
 export type OwnedBlueprint = { id: RecordId; 
 /**
- * `Guid` from sc-extract, rendered as the hex string `sc-contracts`
+ * `Guid` from sc-extract, rendered as the hex string sc-holotable
  * uses externally. String here so the type stays serde/specta-friendly
  * without pulling sc-extract into the IPC layer.
  */
@@ -221,7 +221,7 @@ account_id: RecordId; owned_at: string }
  * polluting PU state.
  * 
  * Storage form is the lowercase string (`'prod'` / `'ptu'`) — same as
- * what `sc_installs::Installation::platform_id` produces.
+ * what `sc_discovery::Installation::platform_id` produces.
  */
 export type Platform = 
 /**

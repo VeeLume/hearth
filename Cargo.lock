@@ -1562,9 +1562,7 @@ dependencies = [
  "hearth-export",
  "hearth-storage",
  "reqwest 0.12.28",
- "sc-contracts",
- "sc-extract",
- "sc-installs",
+ "sc-holotable",
  "serde",
  "serde_json",
  "specta",
@@ -1583,8 +1581,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
- "sc-contracts",
- "sc-extract",
+ "sc-holotable",
  "scraper",
  "serde",
  "specta",
@@ -1596,7 +1593,7 @@ dependencies = [
 name = "hearth-export"
 version = "0.0.1"
 dependencies = [
- "sc-extract",
+ "sc-holotable",
  "serde",
 ]
 
@@ -3522,12 +3519,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "sc-contracts"
+name = "sc-crafting"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
 dependencies = [
  "sc-extract",
- "svarog-common",
+ "sc-items",
+ "sc-resources",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "sc-discovery"
+version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
+dependencies = [
+ "aes",
+ "cbc",
+ "pbkdf2",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3535,13 +3549,13 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
 dependencies = [
  "chrono",
  "encoding_rs",
  "rmp-serde",
+ "sc-discovery",
  "sc-extract-generated",
- "sc-installs",
  "serde",
  "serde_json",
  "svarog-common",
@@ -3555,25 +3569,69 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
 dependencies = [
+ "serde",
  "svarog-common",
  "svarog-datacore",
 ]
 
 [[package]]
-name = "sc-installs"
+name = "sc-holotable"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.7.0#5be265bb21271ceeb0a50534af8855027c09421b"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
 dependencies = [
- "aes",
- "cbc",
- "pbkdf2",
- "regex",
+ "sc-crafting",
+ "sc-discovery",
+ "sc-extract",
+ "sc-items",
+ "sc-missions",
+ "sc-resources",
+ "sc-tags",
  "serde",
- "serde_json",
- "sha2",
+]
+
+[[package]]
+name = "sc-items"
+version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
+dependencies = [
+ "sc-extract",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "sc-missions"
+version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
+dependencies = [
+ "sc-crafting",
+ "sc-extract",
+ "sc-items",
+ "sc-tags",
+ "svarog-common",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "sc-resources"
+version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
+dependencies = [
+ "sc-extract",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "sc-tags"
+version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.9.0#ffe7ef0b1ebcf6bc06bf5d35420c6f52c1febe5d"
+dependencies = [
+ "sc-extract",
+ "serde",
  "tracing",
 ]
 

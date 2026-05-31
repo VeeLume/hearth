@@ -3,9 +3,9 @@
 //!
 //! # Channel + platform selection
 //!
-//! `sc_installs::discover()` returns every installed channel sorted by
-//! `Channel::priority()` (Live → Hotfix → PTU → EPTU → TechPreview).
-//! We pick the first — the most-stable available install.
+//! `sc_holotable::install::discover()` returns every installed channel
+//! sorted by `Channel::priority()` (Live → Hotfix → PTU → EPTU →
+//! TechPreview). We pick the first — the most-stable available install.
 //!
 //! The chosen install's `platform_id` (`'prod'` vs `'ptu'`) comes
 //! straight from the launcher store (since sc-holotable v0.6) and
@@ -29,9 +29,10 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hearth_core::{BpView, Platform};
-use sc_contracts::BlueprintPoolRegistry;
-use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, LocaleMap};
-use sc_installs::Channel;
+use sc_holotable::asset::{AssetConfig, AssetData, AssetSource, Datacore, LocaleMap};
+use sc_holotable::install::Channel;
+use sc_holotable::items::Items;
+use sc_holotable::missions::BlueprintPools;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -75,7 +76,7 @@ impl LoadedScData {
     }
 
     pub fn load_inner() -> Result<Self> {
-        let mut installs = sc_installs::discover().context("sc_installs::discover")?;
+        let mut installs = sc_holotable::install::discover().context("sc discovery")?;
         if installs.is_empty() {
             anyhow::bail!("no Star Citizen installations detected");
         }
@@ -91,7 +92,7 @@ impl LoadedScData {
         // Best-effort handle read. Failure here is logged but not fatal —
         // identity is bootstrapped from the launcher store when available;
         // sign-in flow / manual entry fills the gap otherwise.
-        let handle = match sc_installs::read_identity() {
+        let handle = match sc_holotable::install::read_identity() {
             Ok(id) => Some(id.handle),
             Err(e) => {
                 tracing::info!(
@@ -114,8 +115,7 @@ impl LoadedScData {
         let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
             .context("AssetData::extract")?;
         tracing::info!("parsing Datacore ({:?})", channel);
-        let datacore = Datacore::parse(&assets, &asset_data, &DatacoreConfig::standard())
-            .context("Datacore::parse")?;
+        let datacore = Datacore::parse(&assets, &asset_data).context("Datacore::parse")?;
         drop(assets);
 
         tracing::info!("building blueprint catalog");
@@ -153,25 +153,34 @@ fn group_for(channel: Channel) -> Platform {
 }
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
-    let registry = BlueprintPoolRegistry::build(datacore);
-    let cache = &datacore.snapshot().localized_items;
+    // The per-entity item index (display-name keys + typed Type/SubType).
+    // Since v0.8 this is an explicit build over the record store rather
+    // than a field on the (now-removed) datacore snapshot.
+    let items = Items::build(datacore.records());
+    // Reward pools, resolved against the sc-crafting blueprint catalog.
+    let pools = BlueprintPools::build(datacore, &items);
 
     // A blueprint crafts exactly one item, but the same blueprint can
-    // appear in several reward pools — so the registry yields duplicate
-    // entries per blueprint_record_guid. The catalog wants each
-    // blueprint once; dedup by record GUID, keeping the first sighting.
+    // appear in several reward pools — so iterating pools yields duplicate
+    // entries per blueprint_record_guid. The catalog wants each blueprint
+    // once; dedup by record GUID, keeping the first sighting.
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for pool in registry.iter() {
-        for item in &pool.items {
-            let mut view = hearth_core::sc_data::bp_view(item, pool);
+    for pool in pools.iter() {
+        for entry in &pool.items {
+            let mut view = hearth_core::sc_data::bp_view(entry, pool);
             if !seen.insert(view.blueprint_record_guid.clone()) {
                 continue;
             }
-            view.display_name = item.display_name(cache, locale).map(|s| s.to_owned());
-            if let Some(entity_guid) = item.crafted_entity_guid {
-                view.item_type = cache.item_type(&entity_guid).map(str::to_owned);
-                view.item_sub_type = cache.item_sub_type(&entity_guid).map(str::to_owned);
+            view.display_name = entry.blueprint.display_name(locale).map(|s| s.to_owned());
+            if let Some(entity_guid) = entry.blueprint.crafted_entity_guid() {
+                // item_type/item_sub_type are now typed enums; the IPC
+                // boundary carries their DCB-string form (what itemTypes.ts
+                // already keys on).
+                view.item_type = items.item_type(&entity_guid).map(|t| t.as_dcb_str().to_owned());
+                view.item_sub_type = items
+                    .item_sub_type(&entity_guid)
+                    .map(|t| t.as_dcb_str().to_owned());
             }
             out.push(view);
         }
@@ -191,7 +200,7 @@ fn build_locale_map(bytes: &[u8]) -> Result<LocaleMap> {
     for line in content.lines() {
         if let Some(eq_pos) = line.find('=') {
             let raw_key = &line[..eq_pos];
-            let key = sc_extract::strip_locale_metadata(raw_key);
+            let key = sc_holotable::asset::strip_locale_metadata(raw_key);
             let value = &line[eq_pos + 1..];
             map.set(key, value);
         }

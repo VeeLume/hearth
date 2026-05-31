@@ -9,4 +9,4 @@ description = "Serde schema for Hearth's owned-blueprints JSON. Consumed by sc-l
 
 [dependencies]
 serde.workspace = true
-sc-extract.workspace = true  # for Guid
+sc-holotable.workspace = true  # for Guid (via sc_holotable::asset / prelude)

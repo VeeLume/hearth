@@ -13,8 +13,7 @@ uuid.workspace = true
 chrono.workspace = true
 specta.workspace = true
 thiserror.workspace = true
-sc-contracts.workspace = true
-sc-extract.workspace = true
+sc-holotable.workspace = true
 scraper.workspace = true
 
 [dev-dependencies]
