@@ -202,6 +202,91 @@ pub struct WishlistEntry {
     pub added_at: DateTime<Utc>,
 }
 
+/// Lean view of a mission/contract for the Missions UI.
+///
+/// Built from `sc_missions::Mission` (+ its `BlueprintPools`) in the loader.
+/// Focused on the reward axes hearth surfaces — blueprints first, plus the
+/// common reward kinds (aUEC, scrip, reputation, item unlocks). Heavy mission
+/// detail (encounters, prerequisites, localities, factions-by-name) is
+/// intentionally omitted; reputation carries the raw faction GUID for now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct MissionView {
+    /// Contract GUID, hex-string form. The id `mission_completions` keys on.
+    pub mission_id: String,
+    /// Resolved title; `None` → the UI falls back to `debug_name`.
+    pub title: Option<String>,
+    /// Internal contract debug name — fallback label + DCB cross-ref.
+    pub debug_name: String,
+    /// Resolved description. May contain `~mission(...)` runtime-substitution
+    /// markers the engine fills at spawn time.
+    pub description: Option<String>,
+    /// `availability.once_only` — non-repeatable. These are the missions
+    /// whose non-repeatable BP rewards are worth tracking as collected.
+    pub once_only: bool,
+    pub shareable: bool,
+    pub illegal: bool,
+    /// Post-completion personal cooldown in seconds, if any.
+    pub cooldown_seconds: Option<f32>,
+    /// Fixed aUEC payout, when the contract pays a fixed amount.
+    pub uec_fixed: Option<i32>,
+    /// True when the aUEC payout is engine-computed at runtime (amount unknown).
+    pub uec_calculated: bool,
+    pub scrip: Vec<ScripRewardView>,
+    pub reputation: Vec<RepRewardView>,
+    pub item_rewards: Vec<ItemRewardView>,
+    /// Blueprint-pool rewards — each a weighted pool the contract draws from.
+    pub blueprint_rewards: Vec<BpPoolReward>,
+}
+
+/// A typed-currency (scrip) reward on a mission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ScripRewardView {
+    /// Resolved currency display name; `None` if it didn't resolve.
+    pub name: Option<String>,
+    pub amount: i32,
+}
+
+/// A reputation reward on a mission. Faction is a raw GUID for now (name
+/// resolution is a follow-up); `amount` is `None` for engine-calculated rep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct RepRewardView {
+    pub faction_guid: Option<String>,
+    pub amount: Option<i32>,
+}
+
+/// A non-currency item reward (ship unlock, collector item, …).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ItemRewardView {
+    pub entity_guid: String,
+    /// Resolved item display name; `None` if it didn't resolve.
+    pub name: Option<String>,
+    pub amount: i32,
+}
+
+/// One blueprint-pool reward on a mission: a weighted set the contract draws
+/// from, with the chance the draw happens at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct BpPoolReward {
+    /// `BlueprintPoolRecord` name (prefix stripped). Empty if unnamed.
+    pub pool_name: String,
+    /// 0.0–1.0 chance the blueprint draw happens.
+    pub chance: f32,
+    /// Weighted entries in the pool, descending weight.
+    pub blueprints: Vec<BpRewardEntry>,
+}
+
+/// One weighted blueprint inside a [`BpPoolReward`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct BpRewardEntry {
+    /// `blueprint_record_guid` — matches `BpView.blueprint_record_guid` and
+    /// the wishlist/ownership key, so the UI can cross-reference.
+    pub blueprint_record_guid: String,
+    /// Resolved crafted-item display name; `None` if it didn't resolve.
+    pub name: Option<String>,
+    /// Relative pick-weight within the pool (higher = more likely).
+    pub weight: f32,
+}
+
 /// Lean view of a craftable blueprint for the catalog UI.
 ///
 /// Constructed by `sc_data::bp_view`. All GUIDs are rendered as their

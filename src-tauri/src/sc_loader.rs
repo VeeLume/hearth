@@ -66,7 +66,11 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use hearth_core::{BpView, Platform};
+use hearth_core::sc_data::guid_string;
+use hearth_core::{
+    BpPoolReward, BpRewardEntry, BpView, ItemRewardView, MissionView, Platform, RepRewardView,
+    ScripRewardView,
+};
 use sc_holotable::asset::{
     AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
     RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
@@ -74,19 +78,30 @@ use sc_holotable::asset::{
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::{ItemCatalog, Items};
+use sc_holotable::missions::{Missions, RewardAmount, RewardCurrencies};
 use sc_holotable::resources::Resources;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
-/// Cook-format version for hearth's processed catalog snapshot. Bump
-/// whenever [`BpView`]'s serde shape changes (added fields, renamed
-/// fields, type changes) so older caches invalidate cleanly via
+/// Cook-format version for hearth's processed snapshot. Bump whenever the
+/// cooked [`CookedData`] serde shape changes ([`BpView`] or [`MissionView`]
+/// fields added/renamed/retyped) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
-/// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 10;
+/// silently-wrong shape. (11: added the mission browser data.)
+const HEARTH_CATALOG_COOK_VERSION: u32 = 11;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
+
+/// The cooked SC reference data hearth caches per channel — the blueprint
+/// catalog and the mission browser data, both built from one `Datacore`
+/// parse so the cold path pays the DCB cost once. Serialized whole into the
+/// processed snapshot (`catalog.cook`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CookedData {
+    pub blueprints: Vec<BpView>,
+    pub missions: Vec<MissionView>,
+}
 
 /// Everything the sidebar / scope chip / DB-only commands need before
 /// the heavy DCB parse starts. Produced by [`discover`] in ~50ms.
@@ -153,16 +168,16 @@ fn discover_blocking() -> Result<Discovery> {
     Ok(Discovery { channel, platform, handle, install })
 }
 
-/// Build the cooked blueprint catalog for the given install, running on
-/// a dedicated 32 MiB-stack thread (see module docs for the stack
-/// rationale). Runs the snapshot waterfall internally.
-pub async fn build_catalog(install: Installation) -> Result<Vec<BpView>> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<BpView>>>();
+/// Build the cooked SC reference data (catalog + missions) for the given
+/// install, running on a dedicated 32 MiB-stack thread (see module docs for
+/// the stack rationale). Runs the snapshot waterfall internally.
+pub async fn build_data(install: Installation) -> Result<CookedData> {
+    let (tx, rx) = mpsc::channel::<Result<CookedData>>();
     std::thread::Builder::new()
         .name("hearth-catalog-loader".into())
         .stack_size(LOADER_STACK_SIZE)
         .spawn(move || {
-            let _ = tx.send(build_catalog_blocking(install));
+            let _ = tx.send(build_data_blocking(install));
         })
         .context("spawning catalog-loader thread")?;
     tokio::task::spawn_blocking(move || rx.recv())
@@ -171,33 +186,35 @@ pub async fn build_catalog(install: Installation) -> Result<Vec<BpView>> {
         .map_err(|_| anyhow!("catalog-loader sender dropped"))?
 }
 
-fn build_catalog_blocking(install: Installation) -> Result<Vec<BpView>> {
+fn build_data_blocking(install: Installation) -> Result<CookedData> {
     let start = Instant::now();
     let channel = install.channel;
     let cache_dir = cache_dir_for(channel)?;
 
     // ── Tier 1: processed snapshot (sub-second) ───────────────────
-    if let Some(blueprints) = try_load_processed(&cache_dir, &install) {
+    if let Some(cooked) = try_load_processed(&cache_dir, &install) {
         tracing::info!(
-            count = blueprints.len(),
+            blueprints = cooked.blueprints.len(),
+            missions = cooked.missions.len(),
             channel = ?channel,
             elapsed_ms = start.elapsed().as_millis(),
-            "catalog loaded from processed snapshot"
+            "data loaded from processed snapshot"
         );
-        return Ok(blueprints);
+        return Ok(cooked);
     }
 
     // ── Tier 2: raw extract snapshot (skip p4k extraction) ────────
     if let Some((datacore, locale)) = try_load_extract(&cache_dir, &install) {
-        let blueprints = build_blueprints(&datacore, &locale);
-        save_processed(&cache_dir, &install, &blueprints);
+        let cooked = build_cooked(&datacore, &locale);
+        save_processed(&cache_dir, &install, &cooked);
         tracing::info!(
-            count = blueprints.len(),
+            blueprints = cooked.blueprints.len(),
+            missions = cooked.missions.len(),
             channel = ?channel,
             elapsed_ms = start.elapsed().as_millis(),
-            "catalog built from raw extract snapshot"
+            "data built from raw extract snapshot"
         );
-        return Ok(blueprints);
+        return Ok(cooked);
     }
 
     // ── Tier 3: live parse (cold path) ────────────────────────────
@@ -221,17 +238,28 @@ fn build_catalog_blocking(install: Installation) -> Result<Vec<BpView>> {
     drop(assets);
     let locale = build_locale_map(&locale_bytes)?;
 
-    tracing::info!("building blueprint catalog");
-    let blueprints = build_blueprints(&datacore, &locale);
-    save_processed(&cache_dir, &install, &blueprints);
+    tracing::info!("building catalog + missions");
+    let cooked = build_cooked(&datacore, &locale);
+    save_processed(&cache_dir, &install, &cooked);
 
     tracing::info!(
-        count = blueprints.len(),
+        blueprints = cooked.blueprints.len(),
+        missions = cooked.missions.len(),
         channel = ?channel,
         elapsed_ms = start.elapsed().as_millis(),
-        "catalog built from live parse"
+        "data built from live parse"
     );
-    Ok(blueprints)
+    Ok(cooked)
+}
+
+/// Cook both products from one parsed `Datacore`. Each builder makes its own
+/// indices (cheap relative to the DCB parse this shares), so they stay
+/// self-contained.
+fn build_cooked(datacore: &Datacore, locale: &LocaleMap) -> CookedData {
+    CookedData {
+        blueprints: build_blueprints(datacore, locale),
+        missions: build_missions(datacore, locale),
+    }
 }
 
 // ── Cache helpers ──────────────────────────────────────────────────────
@@ -247,15 +275,15 @@ fn cache_dir_for(channel: Channel) -> Result<PathBuf> {
 /// Try to load the cooked catalog directly. `None` on any failure — the
 /// caller falls through to the next tier. The build_id staleness check
 /// catches SC patches that happened since the snapshot was written.
-fn try_load_processed(cache_dir: &Path, install: &Installation) -> Option<Vec<BpView>> {
+fn try_load_processed(cache_dir: &Path, install: &Installation) -> Option<CookedData> {
     let path = cache_dir.join(CATALOG_SNAPSHOT_NAME);
     if !path.exists() {
         return None;
     }
-    let snap = match ProcessedSnapshot::<Vec<BpView>>::load(&path, HEARTH_CATALOG_COOK_VERSION) {
+    let snap = match ProcessedSnapshot::<CookedData>::load(&path, HEARTH_CATALOG_COOK_VERSION) {
         Ok(s) => s,
         Err(e) => {
-            tracing::info!("processed catalog snapshot unusable ({e}); falling back");
+            tracing::info!("processed snapshot unusable ({e}); falling back");
             return None;
         }
     };
@@ -263,21 +291,21 @@ fn try_load_processed(cache_dir: &Path, install: &Installation) -> Option<Vec<Bp
         tracing::info!(
             snapshot_build_id = %snap.meta.build_id,
             install_build_id = %install.manifest.build_id,
-            "processed catalog snapshot stale (SC patched); falling back"
+            "processed snapshot stale (SC patched); falling back"
         );
         return None;
     }
     Some(snap.into_index())
 }
 
-fn save_processed(cache_dir: &Path, install: &Installation, blueprints: &[BpView]) {
+fn save_processed(cache_dir: &Path, install: &Installation, cooked: &CookedData) {
     let path = cache_dir.join(CATALOG_SNAPSHOT_NAME);
     let meta = snapshot_meta_from_install(install);
-    let snap = ProcessedSnapshot::new(meta, HEARTH_CATALOG_COOK_VERSION, blueprints.to_vec());
+    let snap = ProcessedSnapshot::new(meta, HEARTH_CATALOG_COOK_VERSION, cooked.clone());
     if let Err(e) = snap.save(&path) {
-        tracing::warn!("failed to save processed catalog snapshot to {}: {e}", path.display());
+        tracing::warn!("failed to save processed snapshot to {}: {e}", path.display());
     } else {
-        tracing::debug!("wrote processed catalog snapshot to {}", path.display());
+        tracing::debug!("wrote processed snapshot to {}", path.display());
     }
 }
 
@@ -478,6 +506,102 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
             fill_resource_names(&mut recipe.ingredients, &resources, locale);
         }
         out.push(view);
+    }
+    out
+}
+
+/// Build the mission browser data: every contract with its resolved title /
+/// availability and its reward axes (aUEC, scrip, reputation, item unlocks,
+/// blueprint pools). The blueprint-pool rewards are resolved through the
+/// pools the mission index builds internally (`Missions::blueprints`), so
+/// each reward carries the weighted, named blueprint entries the UI shows.
+fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
+    let items = Items::build(datacore.records());
+    let currencies = RewardCurrencies::build(datacore);
+    let missions = Missions::build(datacore);
+    let pools = &missions.blueprints;
+
+    let mut out = Vec::new();
+    for m in missions.iter() {
+        let r = &m.rewards;
+        let (uec_fixed, uec_calculated) = match r.uec {
+            RewardAmount::Fixed(n) => (Some(n), false),
+            RewardAmount::Calculated => (None, true),
+            RewardAmount::None => (None, false),
+        };
+        let scrip = r
+            .scrip
+            .iter()
+            .map(|s| ScripRewardView {
+                name: currencies
+                    .display_name(&s.currency_guid, &items, locale)
+                    .map(str::to_owned),
+                amount: s.amount,
+            })
+            .collect();
+        let reputation = r
+            .reputation
+            .iter()
+            .map(|rep| RepRewardView {
+                faction_guid: rep.faction.as_ref().map(guid_string),
+                amount: rep.amount,
+            })
+            .collect();
+        let item_rewards = r
+            .items
+            .iter()
+            .map(|it| ItemRewardView {
+                entity_guid: guid_string(&it.entity_class),
+                name: items
+                    .name_key(&it.entity_class)
+                    .and_then(|k| locale.resolve(k))
+                    .map(str::to_owned),
+                amount: it.amount,
+            })
+            .collect();
+        let blueprint_rewards = r
+            .blueprints
+            .iter()
+            .filter_map(|br| {
+                let pool = pools.get(&br.pool_guid)?;
+                let blueprints = pool
+                    .items
+                    .iter()
+                    .map(|e| BpRewardEntry {
+                        blueprint_record_guid: guid_string(&e.blueprint.blueprint_record_guid),
+                        name: e.blueprint.display_name(locale).map(str::to_owned),
+                        weight: e.weight,
+                    })
+                    .collect();
+                Some(BpPoolReward {
+                    pool_name: pool.name.clone(),
+                    chance: br.chance,
+                    blueprints,
+                })
+            })
+            .collect();
+
+        out.push(MissionView {
+            mission_id: guid_string(&m.id),
+            title: m.title(locale).map(str::to_owned),
+            debug_name: m.debug_name.clone(),
+            description: m.description(locale).map(str::to_owned),
+            once_only: m.availability.once_only,
+            shareable: m.shareable,
+            illegal: m.illegal_flag,
+            cooldown_seconds: m
+                .availability
+                .cooldowns
+                .completion
+                .as_ref()
+                .map(|d| d.mean_seconds),
+            uec_fixed,
+            uec_calculated,
+            scrip,
+            reputation,
+            item_rewards,
+            blueprint_rewards,
+        });
     }
     out
 }

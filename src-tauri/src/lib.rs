@@ -22,7 +22,9 @@
 
 use std::path::PathBuf;
 
-use hearth_core::{Account, BpView, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry};
+use hearth_core::{
+    Account, BpView, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry,
+};
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::Manager;
@@ -45,10 +47,11 @@ struct AppState {
     /// (they need the platform + active account, both derived from
     /// this).
     discovery: OnceCell<Discovery>,
-    /// Cooked blueprint catalog. Loaded lazily via the snapshot
-    /// waterfall in `sc_loader::build_catalog`. Only `list_blueprints`
-    /// awaits this; other commands stay fast.
-    catalog: OnceCell<Vec<BpView>>,
+    /// Cooked SC reference data (blueprint catalog + missions). Loaded
+    /// lazily via the snapshot waterfall in `sc_loader::build_data`. Only
+    /// `list_blueprints` / `list_missions` await this; other commands stay
+    /// fast.
+    data: OnceCell<sc_loader::CookedData>,
     /// SQLite pool, lazily initialized on first DB-needing command.
     db: OnceCell<DbPool>,
 }
@@ -57,7 +60,7 @@ impl AppState {
     fn new() -> Self {
         Self {
             discovery: OnceCell::new(),
-            catalog: OnceCell::new(),
+            data: OnceCell::new(),
             db: OnceCell::new(),
         }
     }
@@ -74,23 +77,34 @@ impl AppState {
             .await
     }
 
-    /// Get the cooked blueprint catalog. Awaits `discovery()` first to
-    /// know which install to parse, then runs the snapshot waterfall on
-    /// first call.
-    async fn catalog(&self) -> Result<&Vec<BpView>, AppError> {
-        // Pull the install out before initializing the catalog so the
-        // discovery borrow doesn't span the catalog init.
+    /// Get the cooked SC reference data (catalog + missions). Awaits
+    /// `discovery()` first to know which install to parse, then runs the
+    /// snapshot waterfall on first call. Both products share one parse, so
+    /// warming this once serves `list_blueprints` and `list_missions`.
+    async fn data(&self) -> Result<&sc_loader::CookedData, AppError> {
+        // Pull the install out before initializing so the discovery borrow
+        // doesn't span the data init.
         let install = {
             let d = self.discovery().await?;
             d.install.clone()
         };
-        self.catalog
+        self.data
             .get_or_try_init(|| async move {
-                sc_loader::build_catalog(install)
+                sc_loader::build_data(install)
                     .await
                     .map_err(|e| AppError::Internal(format!("{e:#}")))
             })
             .await
+    }
+
+    /// The cooked blueprint catalog (projection of [`Self::data`]).
+    async fn catalog(&self) -> Result<&Vec<BpView>, AppError> {
+        Ok(&self.data().await?.blueprints)
+    }
+
+    /// The cooked mission browser data (projection of [`Self::data`]).
+    async fn missions(&self) -> Result<&Vec<MissionView>, AppError> {
+        Ok(&self.data().await?.missions)
     }
 
     async fn db(&self) -> Result<&DbPool, AppError> {
@@ -148,6 +162,12 @@ fn db_path() -> PathBuf {
 #[specta::specta]
 async fn list_blueprints(state: tauri::State<'_, AppState>) -> Result<Vec<BpView>, AppError> {
     Ok(state.catalog().await?.clone())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn list_missions(state: tauri::State<'_, AppState>) -> Result<Vec<MissionView>, AppError> {
+    Ok(state.missions().await?.clone())
 }
 
 #[tauri::command]
@@ -364,6 +384,7 @@ async fn wipe_sc_cache(app: tauri::AppHandle) -> Result<(), AppError> {
 pub fn ipc_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         list_blueprints,
+        list_missions,
         list_owned,
         add_owned,
         remove_owned,

@@ -13,6 +13,14 @@ async listBlueprints() : Promise<Result<BpView[], AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+async listMissions() : Promise<Result<MissionView[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_missions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listOwned() : Promise<Result<OwnedBlueprint[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_owned") };
@@ -192,6 +200,40 @@ account_hint: number | null; created_at: string }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
 export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
 /**
+ * One blueprint-pool reward on a mission: a weighted set the contract draws
+ * from, with the chance the draw happens at all.
+ */
+export type BpPoolReward = { 
+/**
+ * `BlueprintPoolRecord` name (prefix stripped). Empty if unnamed.
+ */
+pool_name: string; 
+/**
+ * 0.0–1.0 chance the blueprint draw happens.
+ */
+chance: number; 
+/**
+ * Weighted entries in the pool, descending weight.
+ */
+blueprints: BpRewardEntry[] }
+/**
+ * One weighted blueprint inside a [`BpPoolReward`].
+ */
+export type BpRewardEntry = { 
+/**
+ * `blueprint_record_guid` — matches `BpView.blueprint_record_guid` and
+ * the wishlist/ownership key, so the UI can cross-reference.
+ */
+blueprint_record_guid: string; 
+/**
+ * Resolved crafted-item display name; `None` if it didn't resolve.
+ */
+name: string | null; 
+/**
+ * Relative pick-weight within the pool (higher = more likely).
+ */
+weight: number }
+/**
  * Lean view of a craftable blueprint for the catalog UI.
  * 
  * Constructed by `sc_data::bp_view`. All GUIDs are rendered as their
@@ -292,6 +334,62 @@ quantity_scu: number | null;
  */
 min_quality: number }
 /**
+ * A non-currency item reward (ship unlock, collector item, …).
+ */
+export type ItemRewardView = { entity_guid: string; 
+/**
+ * Resolved item display name; `None` if it didn't resolve.
+ */
+name: string | null; amount: number }
+/**
+ * Lean view of a mission/contract for the Missions UI.
+ * 
+ * Built from `sc_missions::Mission` (+ its `BlueprintPools`) in the loader.
+ * Focused on the reward axes hearth surfaces — blueprints first, plus the
+ * common reward kinds (aUEC, scrip, reputation, item unlocks). Heavy mission
+ * detail (encounters, prerequisites, localities, factions-by-name) is
+ * intentionally omitted; reputation carries the raw faction GUID for now.
+ */
+export type MissionView = { 
+/**
+ * Contract GUID, hex-string form. The id `mission_completions` keys on.
+ */
+mission_id: string; 
+/**
+ * Resolved title; `None` → the UI falls back to `debug_name`.
+ */
+title: string | null; 
+/**
+ * Internal contract debug name — fallback label + DCB cross-ref.
+ */
+debug_name: string; 
+/**
+ * Resolved description. May contain `~mission(...)` runtime-substitution
+ * markers the engine fills at spawn time.
+ */
+description: string | null; 
+/**
+ * `availability.once_only` — non-repeatable. These are the missions
+ * whose non-repeatable BP rewards are worth tracking as collected.
+ */
+once_only: boolean; shareable: boolean; illegal: boolean; 
+/**
+ * Post-completion personal cooldown in seconds, if any.
+ */
+cooldown_seconds: number | null; 
+/**
+ * Fixed aUEC payout, when the contract pays a fixed amount.
+ */
+uec_fixed: number | null; 
+/**
+ * True when the aUEC payout is engine-computed at runtime (amount unknown).
+ */
+uec_calculated: boolean; scrip: ScripRewardView[]; reputation: RepRewardView[]; item_rewards: ItemRewardView[]; 
+/**
+ * Blueprint-pool rewards — each a weighted pool the contract draws from.
+ */
+blueprint_rewards: BpPoolReward[] }
+/**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be
  * independently "owned" on prod and on a test shard, and across
@@ -356,6 +454,19 @@ ingredients: Ingredient[] }
  * later without touching call sites.
  */
 export type RecordId = string
+/**
+ * A reputation reward on a mission. Faction is a raw GUID for now (name
+ * resolution is a follow-up); `amount` is `None` for engine-calculated rep.
+ */
+export type RepRewardView = { faction_guid: string | null; amount: number | null }
+/**
+ * A typed-currency (scrip) reward on a mission.
+ */
+export type ScripRewardView = { 
+/**
+ * Resolved currency display name; `None` if it didn't resolve.
+ */
+name: string | null; amount: number }
 /**
  * What a wishlist entry expresses. A blueprint↔item is 1:1, but "I want
  * this" is ambiguous between wanting the recipe and wanting a crafted
