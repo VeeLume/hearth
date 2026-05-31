@@ -67,9 +67,11 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use hearth_core::{BpView, Platform};
-use sc_holotable::asset::generated::{EntityClassDefinition, RecordLookup};
+use sc_holotable::asset::generated::{
+    DataForgeComponentParamsPtr, EntityClassDefinition, RecordLookup, SItemDefinition,
+};
 use sc_holotable::asset::{
-    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, Guid, LocaleMap,
+    AssetConfig, AssetData, AssetSource, DataPools, Datacore, ExtractSnapshot, Guid, LocaleMap,
     ProcessedSnapshot, RecordPaths, RecordStore, SnapshotCaptureConfig,
     snapshot_meta_from_install,
 };
@@ -86,7 +88,7 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// fields, type changes) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
 /// silently-wrong shape.
-const HEARTH_CATALOG_COOK_VERSION: u32 = 5;
+const HEARTH_CATALOG_COOK_VERSION: u32 = 6;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -463,15 +465,13 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
 /// Tag-tree path prefixes that identify a CIG "model" tag — the leaf
 /// segment is the model name shared across all variants (paints,
 /// editions, modified versions). Verified against SC 4.8 via the
-/// `probe_variants` example for FPS weapons and FPS armor; extend as
-/// other categories surface (ship weapons currently use
-/// `SItemDefinition.tags` string instead of ECD tags, so they fall
-/// through to the entity-GUID fallback for now).
+/// `probe_variants` example. Each prefix REQUIRES content after the
+/// trailing slash so generic category markers (e.g. `Weapon / FPS /
+/// Stocked` on its own) don't match — only the model-leaf variant
+/// (`Weapon / FPS / Stocked / SniperRifle / A03`) does.
 const MODEL_TAG_PREFIXES: &[&str] = &[
-    // FPS Weapons — pattern: `Weapon / FPS / <Class> / <Model>` —
-    // shared by base + all paints + magazines for that pistol.
+    // FPS handheld weapons — `Weapon / FPS / <Class> / <Model>`.
     "Weapon / FPS / Pistol / ",
-    "Weapon / FPS / Rifle / ",
     "Weapon / FPS / SMG / ",
     "Weapon / FPS / Shotgun / ",
     "Weapon / FPS / Sniper / ",
@@ -480,36 +480,93 @@ const MODEL_TAG_PREFIXES: &[&str] = &[
     "Weapon / FPS / Cannon / ",
     "Weapon / FPS / Launcher / ",
     "Weapon / FPS / Mining / ",
-    // FPS Armor — pattern: `Armor / FPS / Set / <Brand> / <Model>` —
-    // shared by base + all paints in one armor set.
+    // FPS shoulder/stocked weapons — `Weapon / FPS / Stocked / <Class>
+    // / <Model>`. Snipers + rifles + shotguns + SMGs follow this nested
+    // path instead of the flat one above (verified for SC 4.8 SniperRifle).
+    "Weapon / FPS / Stocked / Rifle / ",
+    "Weapon / FPS / Stocked / SniperRifle / ",
+    "Weapon / FPS / Stocked / Shotgun / ",
+    "Weapon / FPS / Stocked / SMG / ",
+    "Weapon / FPS / Stocked / LMG / ",
+    "Weapon / FPS / Stocked / HMG / ",
+    // FPS Armor — `Armor / FPS / Set / <Brand> / <Model>`. Note that
+    // some armor sets ship with ONLY the 3-segment `Armor / FPS / Set`
+    // marker tag (no Brand / Model leaf) — those fall through to the
+    // item.tags signal below.
     "Armor / FPS / Set / ",
 ];
 
-/// Compute the bundle key for a crafted entity. Tag-based when the
-/// entity carries a known model tag; otherwise the entity GUID itself
-/// (so multiple blueprints crafting the same entity — e.g. the three
-/// Cryo-Star SL cooler BPs — still bundle together, while distinct
-/// entities stay as singletons).
+/// Compute the bundle key for a crafted entity via a priority chain.
+/// Each layer answers a slightly different shape of "what is this
+/// item's identity for bundling purposes":
+///
+/// 1. **ECD model tag** — the canonical signal when present. Pattern
+///    `Weapon / FPS / Pistol / Coda` (4 segs) or
+///    `Weapon / FPS / Stocked / SniperRifle / A03` (5 segs) or
+///    `Armor / FPS / Set / ClarkeDefense / FBL-8a` (5 segs). Path-equal
+///    across all paints / "Modified" / linked attachments of one model.
+/// 2. **SItemDefinition.tags first token** — catches armor sets like
+///    Corbel that ship with only the generic `Armor / FPS / Set` marker
+///    (no specific brand/model leaf). The first whitespace-delimited
+///    token (e.g. `"omc_utility_heavy"`) is the set identifier when it
+///    contains an underscore — that filters out generic strings like
+///    `"pistol"` / `"stocked"` that several thousand items share.
+/// 3. **Entity GUID** — bundles same-entity multi-BP cases (the three
+///    Cryo-Star SL cooler blueprints) and keeps anything truly distinct
+///    as a singleton.
 fn compute_model_id(entity_guid: Guid, records: &RecordStore, tags: &Tags) -> String {
-    if let Some(handle) = EntityClassDefinition::lookup(&records.records, &entity_guid)
-        && let Some(ecd) = handle.get(&records.pools)
-    {
-        for tag_guid in &ecd.tags {
-            let path_segments = tags.path(tag_guid);
-            if path_segments.is_empty() {
-                continue;
-            }
-            let path = path_segments.join(" / ");
-            for prefix in MODEL_TAG_PREFIXES {
-                if path.starts_with(prefix) {
-                    return path;
-                }
+    let Some(handle) = EntityClassDefinition::lookup(&records.records, &entity_guid) else {
+        return entity_guid.to_string();
+    };
+    let Some(ecd) = handle.get(&records.pools) else {
+        return entity_guid.to_string();
+    };
+
+    // 1. ECD model tag — first one matching a whitelisted prefix.
+    for tag_guid in &ecd.tags {
+        let path_segments = tags.path(tag_guid);
+        if path_segments.is_empty() {
+            continue;
+        }
+        let path = path_segments.join(" / ");
+        for prefix in MODEL_TAG_PREFIXES {
+            if path.starts_with(prefix) {
+                return path;
             }
         }
     }
-    // No model tag — fall back to entity GUID. Same-entity multi-BP
-    // cases bundle; distinct-entity items become singletons.
+
+    // 2. SItemDefinition.tags first token (set identifier for the
+    //    armor sets that don't have a 5-segment Set tag).
+    if let Some(item_def) = find_item_def(ecd, &records.pools)
+        && let Some(token) = item_def.tags.split_whitespace().next()
+        && token.contains('_')
+        // Filter out parametric "Set_01" / "Color_02" tokens that
+        // some items lead with — those identify VARIANTS, not models.
+        && !token.starts_with("Set_")
+        && !token.starts_with("Color_")
+    {
+        return format!("item-tag:{token}");
+    }
+
+    // 3. Entity GUID fallback.
     entity_guid.to_string()
+}
+
+/// Find the first `SItemDefinition` reachable through an entity's
+/// `SAttachableComponentParams` component — same walk sc-items uses
+/// internally to build the `Items` cache. Lives here (mirrored)
+/// because the SItemDefinition.tags field isn't on the cooked `Item`
+/// surface.
+fn find_item_def<'a>(
+    ecd: &EntityClassDefinition,
+    pools: &'a DataPools,
+) -> Option<&'a SItemDefinition> {
+    let attachable = ecd.components.iter().find_map(|c| match c {
+        DataForgeComponentParamsPtr::SAttachableComponentParams(h) => h.get(pools),
+        _ => None,
+    })?;
+    attachable.attach_def.and_then(|h| h.get(pools))
 }
 
 /// Fill `Ingredient.resource_name` for each ingredient by looking up

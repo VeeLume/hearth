@@ -1,26 +1,29 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { commands, type BpView } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
 
   let blueprints = $state<BpView[]>([]);
-  let owned = $state<Set<string>>(new Set());
+  // SvelteSet is reactive on .has() / .add() / .delete() — using a
+  // plain Set wrapped in $state had subtle reactivity gaps where
+  // dependent template expressions ({@const isOwned = owned.has(...)})
+  // didn't always re-run after toggle.
+  let owned = new SvelteSet<string>();
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let query = $state("");
-  // Set of expansion keys whose row is currently expanded (recipe
-  // panel + variant list visible). For leaf rows the key is the
-  // blueprint_record_guid; for variant bundles it's a stable composite
-  // (`bundle:<sorted-joined-guids>`). Multiple can be open at once.
-  let expanded = $state<Set<string>>(new Set());
+  // Expansion keys for rows currently showing their recipe / variant
+  // panel. Leaf rows key on blueprint_record_guid; variant bundles
+  // key on a stable composite (`bundle:<sorted-joined-guids>`).
+  let expanded = new SvelteSet<string>();
 
   type Filter = "all" | "owned" | "unowned";
   let filter = $state<Filter>("all");
 
   function toggleExpanded(key: string) {
-    const next = new Set(expanded);
-    next.has(key) ? next.delete(key) : next.add(key);
-    expanded = next;
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
   }
 
   // ─── Variant bundling ─────────────────────────────────────────────
@@ -156,26 +159,27 @@
       errorMessage = `${bpResult.error.kind}: ${bpResult.error.message}`;
     }
     if (ownedResult.status === "ok") {
-      owned = new Set(ownedResult.data.map((o) => o.blueprint_guid));
+      owned.clear();
+      for (const o of ownedResult.data) owned.add(o.blueprint_guid);
     }
     loading = false;
   });
 
   async function toggleOwned(guid: string) {
-    // Optimistic flip, reconcile from the command's returned truth.
-    const next = new Set(owned);
-    next.has(guid) ? next.delete(guid) : next.add(guid);
-    owned = next;
+    // Optimistic flip; reconcile from the command's returned truth.
+    const wasOwned = owned.has(guid);
+    if (wasOwned) owned.delete(guid);
+    else owned.add(guid);
+
     const result = await commands.toggleOwned(guid);
     if (result.status === "ok") {
-      const reconciled = new Set(owned);
-      result.data ? reconciled.add(guid) : reconciled.delete(guid);
-      owned = reconciled;
+      // Server truth — only adjust if it disagrees with our optimistic flip.
+      if (result.data) owned.add(guid);
+      else owned.delete(guid);
     } else {
-      // Revert on failure.
-      const reverted = new Set(owned);
-      reverted.has(guid) ? reverted.delete(guid) : reverted.add(guid);
-      owned = reverted;
+      // Revert.
+      if (wasOwned) owned.add(guid);
+      else owned.delete(guid);
       errorMessage = `${result.error.kind}: ${result.error.message}`;
     }
   }
