@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use hearth_core::{
     Account, BpView, MissionRef, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent,
@@ -29,7 +30,7 @@ use hearth_core::{
 };
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_specta::{Builder, collect_commands};
 use tokio::sync::OnceCell;
 
@@ -485,6 +486,172 @@ fn spawn_warmup(handle: tauri::AppHandle) {
     });
 }
 
+/// Payload of the `blueprints-sensed` event — emitted after a Game.log poll
+/// that auto-marked (or failed to resolve) blueprints, so the UI can toast
+/// "Hearth marked N owned" and refresh.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct BlueprintsSensed {
+    /// Display names that resolved to ≥1 catalog blueprint this poll.
+    marked: Vec<String>,
+    /// `blueprint_record_guid`s newly flipped to owned (skips already-owned).
+    newly_owned: Vec<String>,
+    /// Sensed names that matched no catalog blueprint (name drift / locale).
+    unresolved: Vec<String>,
+}
+
+/// Catalog display-name → `blueprint_record_guid`s. One name can map to
+/// several interchangeable BPs (variants / duplicate-BP collapse); the
+/// sensor marks all of them, consistent with entity-level ownership.
+fn build_name_index(catalog: &[BpView]) -> HashMap<String, Vec<String>> {
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+    for bp in catalog {
+        if let Some(name) = &bp.display_name {
+            let key = name.trim().to_lowercase();
+            if !key.is_empty() {
+                index.entry(key).or_default().push(bp.blueprint_record_guid.clone());
+            }
+        }
+    }
+    index
+}
+
+/// v1.5 auto-sensing: tail the active install's `Game.log`, and when the
+/// logged session matches the active account + platform (pollution guard),
+/// auto-mark received blueprints owned and emit `blueprints-sensed`.
+///
+/// Best-effort throughout — no install, no handle, or a poll error just means
+/// no sensing; nothing here can break the rest of the app.
+fn spawn_sensor(handle: tauri::AppHandle) {
+    const POLL: Duration = Duration::from_secs(4);
+
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+
+        // Needs the install (for the log path + the active handle/platform to
+        // guard against) and the catalog (for name → guid resolution).
+        let (log_path, active_platform, active_handle) = match state.discovery().await {
+            Ok(d) => (
+                sensors::game_log_path(&d.install.root),
+                d.platform,
+                d.handle.clone(),
+            ),
+            Err(_) => return, // no install → nothing to sense
+        };
+        let name_index = match state.catalog().await {
+            Ok(catalog) => build_name_index(catalog),
+            Err(_) => return,
+        };
+        if active_handle.is_none() {
+            // Without the launcher handle we can't pollution-guard (and owned
+            // writes would fail anyway — they need an active account). Don't
+            // tail; the user can still mark BPs manually.
+            tracing::info!("sensor disabled: no launcher handle to guard against");
+            return;
+        }
+
+        tracing::info!(path = %log_path.display(), "Game.log sensor started");
+        let mut tailer = sensors::GameLogTailer::new(log_path);
+        // Session header carried across polls (the handle/platform are logged
+        // once near the top; the first poll backfills the whole file).
+        let mut sensed_platform: Option<Platform> = None;
+        let mut sensed_handle: Option<String> = None;
+        let mut ticker = tokio::time::interval(POLL);
+
+        loop {
+            ticker.tick().await;
+            let events = match tailer.poll() {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!("Game.log poll failed: {e}");
+                    continue;
+                }
+            };
+            if events.is_empty() {
+                continue;
+            }
+
+            // First pass: fold session state + collect guarded blueprint hits.
+            let mut to_mark: Vec<(String, Vec<String>)> = Vec::new(); // (name, guids)
+            let mut unresolved: Vec<String> = Vec::new();
+            for ev in events {
+                match ev {
+                    sensors::SensedEvent::SessionPlatform(p) => sensed_platform = Some(p),
+                    sensors::SensedEvent::SessionHandle(h) => sensed_handle = Some(h),
+                    sensors::SensedEvent::BlueprintReceived { name } => {
+                        // Pollution guard: same platform AND same handle as
+                        // the active account, else this log isn't ours to act on.
+                        let guard_ok = sensed_platform == Some(active_platform)
+                            && matches!(
+                                (&sensed_handle, &active_handle),
+                                (Some(s), Some(a)) if s.eq_ignore_ascii_case(a)
+                            );
+                        if !guard_ok {
+                            tracing::debug!(
+                                bp = %name,
+                                "sensed blueprint skipped — session doesn't match active account/platform"
+                            );
+                            continue;
+                        }
+                        match name_index.get(&name.trim().to_lowercase()) {
+                            Some(guids) => to_mark.push((name, guids.clone())),
+                            None => unresolved.push(name),
+                        }
+                    }
+                }
+            }
+
+            if to_mark.is_empty() && unresolved.is_empty() {
+                continue;
+            }
+
+            // Second pass: mark owned (resolve scope + db once for the batch).
+            let mut marked = Vec::new();
+            let mut newly_owned = Vec::new();
+            if !to_mark.is_empty() {
+                match (state.active_scope().await, state.db().await) {
+                    (Ok(scope), Ok(db)) => {
+                        for (name, guids) in to_mark {
+                            for guid in guids {
+                                match hearth_storage::get_owned(db, scope, &guid).await {
+                                    Ok(Some(_)) => {} // already owned
+                                    Ok(None) => {
+                                        match hearth_storage::add_owned(db, scope, &guid).await {
+                                            Ok(_) => newly_owned.push(guid),
+                                            Err(e) => tracing::warn!("sensor add_owned failed: {e:#}"),
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!("sensor get_owned failed: {e:#}"),
+                                }
+                            }
+                            marked.push(name);
+                        }
+                    }
+                    _ => {
+                        tracing::warn!("sensor could not resolve scope/db; skipping this batch");
+                        continue;
+                    }
+                }
+            }
+
+            if !newly_owned.is_empty() {
+                state.refresh_owned_export().await; // keep the langpatch export in sync
+            }
+            tracing::info!(
+                marked = marked.len(),
+                newly_owned = newly_owned.len(),
+                unresolved = unresolved.len(),
+                "Game.log sensing pass"
+            );
+            if let Err(e) = handle.emit(
+                "blueprints-sensed",
+                BlueprintsSensed { marked, newly_owned, unresolved },
+            ) {
+                tracing::warn!("failed to emit blueprints-sensed: {e}");
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = ipc_builder();
@@ -499,6 +666,7 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             spawn_warmup(app.handle().clone());
+            spawn_sensor(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
