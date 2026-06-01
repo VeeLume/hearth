@@ -8,5 +8,6 @@ repository.workspace = true
 description = "Serde schema for Hearth's owned-blueprints JSON. Consumed by sc-langpatch."
 
 [dependencies]
+# Serde-only by design — no sc-holotable, so sc-langpatch can consume this
+# without inheriting Hearth's sc-holotable version. Guids cross as hex strings.
 serde.workspace = true
-sc-holotable.workspace = true  # for Guid (via sc_holotable::asset / prelude)

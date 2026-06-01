@@ -18,7 +18,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use hearth_export::{EXPORT_RELATIVE_PATH, OwnedBlueprints};
-use sc_holotable::asset::Guid;
 
 /// Absolute export path under the platform data dir
 /// (`%APPDATA%/hearth/exports/owned-blueprints.json` on Windows). `None`
@@ -28,21 +27,12 @@ pub fn export_path() -> Option<PathBuf> {
 }
 
 /// Build the [`OwnedBlueprints`] contract from the active scope's owned guid
-/// strings and write it atomically. Unparseable guids are skipped (they'd
-/// have to be corrupt — stored guids come from sc-holotable's own hex form).
+/// strings and write it atomically. Guids are already in CIG hex form (the
+/// storage key), so they cross into the contract verbatim.
 pub fn write_owned(owned_guids: &[String]) -> Result<()> {
     let path = export_path().context("no platform data dir for owned-blueprints export")?;
 
-    let owned: HashSet<Guid> = owned_guids
-        .iter()
-        .filter_map(|s| match s.parse::<Guid>() {
-            Ok(g) => Some(g),
-            Err(e) => {
-                tracing::warn!("skipping unparseable owned guid {s:?} in export: {e}");
-                None
-            }
-        })
-        .collect();
+    let owned: HashSet<String> = owned_guids.iter().cloned().collect();
     let doc = OwnedBlueprints { owned };
     let json = serde_json::to_vec_pretty(&doc).context("serializing owned-blueprints")?;
 
