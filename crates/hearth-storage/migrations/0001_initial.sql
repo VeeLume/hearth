@@ -18,9 +18,29 @@ CREATE TABLE accounts (
     citizen_record  INTEGER,                      -- public profile #
     enlisted        TEXT,                         -- public profile date
     last_verified   TEXT,                         -- last profile scrape ts
-    account_hint    INTEGER,                      -- heapAccountId hint
+    account_hint    INTEGER,                      -- numeric accountId (heapAccountId)
     created_at      TEXT NOT NULL
 );
+
+
+-- Past RSI handles an account was known by. The *current* handle lives on
+-- accounts.handle; these are prior labels (handle renames) so the Game.log
+-- sensor + history import can attribute old-handle sessions to the right
+-- account. A handle maps to at most one account (PK on handle); reassigning a
+-- freed-then-reused handle goes through the merge/alias ops which replace it.
+-- Identity is the Hearth UUID — handle + aliases are mutable labels, while
+-- account_hint (numeric accountId) and citizen_record are the durable
+-- anchors. Linking old handles is a *manual* step (a freed handle may belong
+-- to a different player; a user may run two real accounts), surfaced by the
+-- history import and confirmed in the Accounts UI.
+CREATE TABLE account_aliases (
+    handle      TEXT PRIMARY KEY,                 -- a past RSI handle
+    account_id  TEXT NOT NULL
+        REFERENCES accounts(id) ON DELETE CASCADE,
+    added_at    TEXT NOT NULL
+);
+
+CREATE INDEX idx_account_aliases_account ON account_aliases(account_id);
 
 
 CREATE TABLE owned_blueprints (
