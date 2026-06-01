@@ -577,6 +577,10 @@ fn spawn_sensor(handle: tauri::AppHandle) {
                 match ev {
                     sensors::SensedEvent::SessionPlatform(p) => sensed_platform = Some(p),
                     sensors::SensedEvent::SessionHandle(h) => sensed_handle = Some(h),
+                    // accountId isn't part of the live guard (the live session
+                    // is always the active account by definition); it's used by
+                    // the history import to group renamed-account sessions.
+                    sensors::SensedEvent::SessionAccountId(_) => {}
                     sensors::SensedEvent::BlueprintReceived { name } => {
                         // Pollution guard: same platform AND same handle as
                         // the active account, else this log isn't ours to act on.

@@ -27,13 +27,58 @@ pub mod parse;
 
 pub use parse::SensedEvent;
 
+use std::collections::HashSet;
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use hearth_core::Platform;
 
 /// The conventional `Game.log` path inside an install's channel directory
 /// (e.g. `…/StarCitizen/LIVE/Game.log`).
 pub fn game_log_path(channel_dir: &Path) -> PathBuf {
     channel_dir.join("Game.log")
+}
+
+/// The directory of rotated session logs (`…/StarCitizen/LIVE/logbackups/`).
+pub fn log_backups_dir(channel_dir: &Path) -> PathBuf {
+    channel_dir.join("logbackups")
+}
+
+/// What one session log (the live `Game.log` or a rotated backup) tells us:
+/// who played, on what platform, and which blueprints they received. The
+/// history import folds these across all backups, grouping by `account_hint`
+/// (falling back to handle) to surface the identities the user then confirms.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub platform: Option<Platform>,
+    pub handle: Option<String>,
+    /// Numeric CIG `accountId` for the session, if present.
+    pub account_hint: Option<i64>,
+    /// Distinct blueprint display names received this session (in first-seen
+    /// order). Display names — the importer resolves them to guids via the
+    /// catalog.
+    pub blueprint_names: Vec<String>,
+}
+
+/// Summarise a single session log. Whole-file read (a backup is one session),
+/// so unlike the live tailer there's no offset bookkeeping.
+pub fn summarize_session<R: BufRead>(reader: R) -> SessionSummary {
+    let mut summary = SessionSummary::default();
+    let mut seen = HashSet::new();
+    for line in reader.lines().map_while(Result::ok) {
+        match parse::parse_line(&line) {
+            Some(SensedEvent::SessionPlatform(p)) => summary.platform = Some(p),
+            Some(SensedEvent::SessionHandle(h)) => summary.handle = Some(h),
+            Some(SensedEvent::SessionAccountId(id)) => summary.account_hint = Some(id),
+            Some(SensedEvent::BlueprintReceived { name }) => {
+                if seen.insert(name.clone()) {
+                    summary.blueprint_names.push(name);
+                }
+            }
+            None => {}
+        }
+    }
+    summary
 }
 
 /// Parse every line of a reader into the events Hearth tracks, in order.
@@ -128,6 +173,24 @@ mod tests {
         "<2026-05-30T14:43:41.167Z> [Notice] <UpdateNotificationItem> Notification \"Received Blueprint: Testudo Arms Clanguard: \" [60], Action: Next [Team_CoreGameplayFeatures][Missions][Comms]\n",
         "<2026-05-30T14:43:35.628Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: S3 Attrition-3 Repeater: \" [61] to queue. New queue size: 3, MissionId: [00000000-0000-0000-0000-000000000000], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]\n",
     );
+
+    #[test]
+    fn summarize_session_captures_identity_and_distinct_blueprints() {
+        let log = concat!(
+            "<…>    [Cmdline* ] --envtag='PUB'\n",
+            "<…> [Notice] <AccountLoginCharacterStatus_Character> Character: - accountId 1155333 - name VeeLume - state STATE_CURRENT [Team_GameServices][Login]\n",
+            "<…> [Notice] <Legacy login response> [CIG-net] User Login Success - Handle[VeeLume] - Time[1] [Team_GameServices][Login]\n",
+            "<…> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo: \" [1] to queue. [Team]\n",
+            "<…> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo: \" [2] to queue. [Team]\n",
+            "<…> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Bar: \" [3] to queue. [Team]\n",
+        );
+        let s = summarize_session(Cursor::new(log));
+        assert_eq!(s.platform, Some(Platform::Prod));
+        assert_eq!(s.handle.as_deref(), Some("VeeLume"));
+        assert_eq!(s.account_hint, Some(1155333));
+        // "Foo" received twice → recorded once; order preserved.
+        assert_eq!(s.blueprint_names, vec!["Foo".to_string(), "Bar".to_string()]);
+    }
 
     #[test]
     fn scan_reader_extracts_in_order_without_double_counting() {

@@ -26,6 +26,12 @@ pub enum SensedEvent {
     SessionPlatform(Platform),
     /// The RSI handle signed in for this session (`Handle[...]`).
     SessionHandle(String),
+    /// The numeric CIG `accountId` for this session (the `heapAccountId`).
+    /// A handle rename keeps the same `accountId`, so it groups a renamed
+    /// account's sessions for the history import's suggestions. Not an
+    /// absolute key — CIG rotated it once (Oct–Dec 2024) — so the user
+    /// confirms the grouping.
+    SessionAccountId(i64),
 }
 
 /// Recognise one line. Returns `None` for the ~99% of lines that carry no
@@ -39,6 +45,9 @@ pub fn parse_line(line: &str) -> Option<SensedEvent> {
     }
     if let Some(handle) = session_handle(line) {
         return Some(SensedEvent::SessionHandle(handle.to_owned()));
+    }
+    if let Some(id) = session_account_id(line) {
+        return Some(SensedEvent::SessionAccountId(id));
     }
     None
 }
@@ -103,6 +112,26 @@ fn session_handle(line: &str) -> Option<&str> {
     (!handle.is_empty()).then_some(handle)
 }
 
+/// The numeric `accountId` from the active character-status line, e.g.:
+///
+/// ```text
+/// <…> <AccountLoginCharacterStatus_Character> Character: … - accountId 1155333 - name VeeLume - state STATE_CURRENT …
+/// ```
+///
+/// Read only from the `STATE_CURRENT` character so defunct character
+/// artifacts (the ephemeral `5xxxxxx` ids the identity investigation flagged)
+/// don't leak in.
+fn session_account_id(line: &str) -> Option<i64> {
+    if !line.contains("<AccountLoginCharacterStatus_Character>") || !line.contains("STATE_CURRENT") {
+        return None;
+    }
+    const PREFIX: &str = "accountId ";
+    let start = line.find(PREFIX)? + PREFIX.len();
+    let rest = &line[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse::<i64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +184,18 @@ mod tests {
     fn parses_session_handle() {
         let line = r#"<2026-05-30T13:19:29.286Z> [Notice] <Legacy login response> [CIG-net] User Login Success - Handle[VeeLume] - Time[341393589] [Team_GameServices][Login]"#;
         assert_eq!(parse_line(line), Some(SensedEvent::SessionHandle("VeeLume".into())));
+    }
+
+    #[test]
+    fn parses_session_account_id() {
+        let line = r#"<2026-05-30T13:19:26.325Z> [Notice] <AccountLoginCharacterStatus_Character> Character: createdAt 1778733647232 - updatedAt 1778788302608 - geid 204717100112 - accountId 1155333 - name VeeLume - state STATE_CURRENT [Team_GameServices][Login]"#;
+        assert_eq!(parse_line(line), Some(SensedEvent::SessionAccountId(1155333)));
+    }
+
+    #[test]
+    fn ignores_non_current_character_status() {
+        let line = r#"<2026-05-30T13:19:26.325Z> [Notice] <AccountLoginCharacterStatus_Character> Character: … - accountId 5551234 - name OldChar - state STATE_DEFUNCT [Team_GameServices][Login]"#;
+        assert_eq!(parse_line(line), None);
     }
 
     #[test]
