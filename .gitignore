@@ -26,3 +26,6 @@ src-tauri/.cargo/
 
 # Claude Code memory (local-only)
 .claude/
+
+# Locale Release Build
+hearth.exe

@@ -266,12 +266,12 @@ fn build_cooked(datacore: &Datacore, locale: &LocaleMap) -> CookedData {
 
 // ── Cache helpers ──────────────────────────────────────────────────────
 
-/// Per-channel cache directory under the platform's user-data dir.
-/// `%APPDATA%/hearth/cache/<channel>/` on Windows.
+/// Per-channel cache directory under Hearth's data root
+/// (`%APPDATA%/hearth[-dev]/cache/<channel>/` on Windows). Honours the
+/// dev/release namespace split via [`crate::app_data_root`].
 fn cache_dir_for(channel: Channel) -> Result<PathBuf> {
-    let base = dirs::data_dir().ok_or_else(|| anyhow!("no platform data dir"))?;
     let key = channel.install_dir_name().to_ascii_lowercase();
-    Ok(base.join("hearth").join("cache").join(key))
+    Ok(crate::app_data_root().join("cache").join(key))
 }
 
 /// Try to load the cooked catalog directly. `None` on any failure — the

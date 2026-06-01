@@ -17,13 +17,18 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use hearth_export::{EXPORT_RELATIVE_PATH, OwnedBlueprints};
+use hearth_export::OwnedBlueprints;
 
-/// Absolute export path under the platform data dir
-/// (`%APPDATA%/hearth/exports/owned-blueprints.json` on Windows). `None`
-/// when the OS data dir can't be resolved.
+/// Absolute owned-blueprints export path under Hearth's data root
+/// (`%APPDATA%/hearth[-dev]/exports/owned-blueprints.json` on Windows).
+///
+/// In a **release** build this equals `dirs::data_dir()` joined with
+/// [`hearth_export::EXPORT_RELATIVE_PATH`] — the canonical path sc-langpatch
+/// reads. A **debug** build writes under the `hearth-dev` namespace instead,
+/// so dev sessions never overwrite the real release export the live
+/// sc-langpatch consumes (see [`crate::app_data_root`]).
 pub fn export_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join(EXPORT_RELATIVE_PATH))
+    Some(crate::app_data_root().join("exports").join("owned-blueprints.json"))
 }
 
 /// Build the [`OwnedBlueprints`] contract from the active scope's owned guid
