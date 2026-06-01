@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
   import { commands, type MissionView } from "$lib/bindings";
 
@@ -92,9 +93,23 @@
 
   const outstandingCount = $derived(missions.filter(hasOutstanding).length);
 
+  // Cross-link from the wishlist: `?bp=<guid,guid,…>` narrows to the missions
+  // that grant any of those blueprint records; `?name=` labels the banner. The
+  // wishlist passes every interchangeable BP guid of a craftable so this matches
+  // whichever record the mission pool happens to reference.
+  const bpFilter = $derived.by(() => {
+    const raw = page.url.searchParams.get("bp");
+    if (!raw) return null;
+    const set = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+    return set.size > 0 ? set : null;
+  });
+  const bpFilterName = $derived(page.url.searchParams.get("name"));
+
   const filtered = $derived.by(() => {
     const q = query.toLowerCase().trim();
+    const bp = bpFilter;
     return missions.filter((m) => {
+      if (bp && !rewardGuids(m).some((g) => bp.has(g))) return false;
       if (filter === "grantsbp" && !grantsBp(m)) return false;
       if (filter === "outstanding" && !hasOutstanding(m)) return false;
       if (filter === "exhausted" && !isExhausted(m)) return false;
@@ -150,6 +165,16 @@
 {:else if errorMessage}
   <div class="error"><strong>Couldn't load missions.</strong><p>{errorMessage}</p></div>
 {:else}
+  {#if bpFilter}
+    <div class="bp-banner">
+      <span class="bp-banner-text">
+        Showing missions that grant
+        <strong>{bpFilterName ?? "the selected blueprint"}</strong>
+        <span class="bp-banner-n">· {filtered.length}</span>
+      </span>
+      <a class="bp-clear" href="/missions" title="Clear this filter">all missions ✕</a>
+    </div>
+  {/if}
   <div class="filterbar">
     <div class="chips">
       {#each filters as f (f.id)}
@@ -311,6 +336,34 @@
 
   .status, .error { padding: 1rem 1.6rem; color: var(--muted); }
   .error strong { color: var(--bad); }
+
+  /* Cross-link banner shown when arriving from the wishlist (?bp=…). */
+  .bp-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 0.85rem 1.6rem 0;
+    padding: 0.5rem 0.85rem;
+    border: 1px solid var(--ember-dim);
+    border-radius: 8px;
+    background: var(--ember-glow);
+    font-size: 0.82rem;
+  }
+  .bp-banner-text { color: var(--muted); }
+  .bp-banner-text strong { color: var(--ember); }
+  .bp-banner-n { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .bp-clear {
+    margin-left: auto;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.78rem;
+    white-space: nowrap;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    transition: all 90ms;
+  }
+  .bp-clear:hover { color: var(--text); border-color: var(--ember-dim); }
 
   .filterbar { display: flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.6rem; }
   .chips { display: flex; gap: 0.5rem; }

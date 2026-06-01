@@ -61,10 +61,20 @@
     return out;
   }
 
-  /** Compact label for the fulfilment chip; full list goes in the tooltip. */
+  /** Compact label for the fulfilment chip. */
   function grantLabel(ms: MissionRef[]): string {
     if (ms.length === 1) return `granted by ${ms[0].title ?? ms[0].mission_id}`;
     return `granted by ${ms.length} missions`;
+  }
+
+  /** Deep-link to the Missions view, pre-filtered to the missions granting any
+   *  of this craftable's interchangeable BPs (name labels the banner there). */
+  function missionsLink(c: Craftable): string {
+    const params = new URLSearchParams({
+      bp: c.bpGuids.join(","),
+      name: nameOf(c.rep),
+    });
+    return `/missions?${params}`;
   }
 
   function wishSet(intent: WishIntent): SvelteSet<string> {
@@ -156,14 +166,13 @@
               <span class="wl-name">{nameOf(c.rep)}</span>
               <span class="wl-cat">{categoryLabel(c.rep)}</span>
               {#if ms.length > 0}
-                <span
+                <a
                   class="fulfil granted"
-                  title={ms
-                    .map((m) => (m.title ?? m.mission_id) + (m.once_only ? " (once)" : ""))
-                    .join("\n")}
+                  href={missionsLink(c)}
+                  title={`View the ${ms.length} mission${ms.length === 1 ? "" : "s"} that grant this blueprint`}
                 >
-                  {grantLabel(ms)}
-                </span>
+                  {grantLabel(ms)} →
+                </a>
               {:else}
                 <span
                   class="fulfil none"
@@ -354,11 +363,17 @@
     color: var(--ember);
     border-color: var(--ember-dim);
   }
-  /* ⚐ fulfilment is live: a real mission source exists for this BP. */
+  /* ⚐ fulfilment is live: a real mission source exists — links to the
+     Missions view filtered to those missions. */
   .fulfil.granted {
     color: var(--ember);
     border-color: var(--ember-dim);
-    cursor: help;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 90ms;
+  }
+  .fulfil.granted:hover {
+    background: var(--ember-glow);
   }
   /* No mission grants it (default-unlocked, or acquired some other way). */
   .fulfil.none {
