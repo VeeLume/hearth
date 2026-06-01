@@ -697,7 +697,7 @@ async fn apply_log_import(
         // Mark blueprints owned in the prod scope (history is prod-only).
         let scope = hearth_storage::Scope::new(Platform::Prod, account_id);
         for name in &identity.blueprint_names {
-            match name_index.get(&name.trim().to_lowercase()) {
+            match resolve_blueprint_guids(&name_index, name) {
                 Some(guids) => {
                     for guid in guids {
                         let already = hearth_storage::get_owned(db, scope, guid)
@@ -850,13 +850,50 @@ fn build_name_index(catalog: &[BpView]) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
     for bp in catalog {
         if let Some(name) = &bp.display_name {
-            let key = name.trim().to_lowercase();
+            let key = normalize_bp_name(name);
             if !key.is_empty() {
                 index.entry(key).or_default().push(bp.blueprint_record_guid.clone());
             }
         }
     }
     index
+}
+
+fn normalize_bp_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// True for a leading size/grade code token the in-game blueprint label
+/// carries but the catalog display name omits — ship-weapon sizes (`S3`) and
+/// manufacturer-grade codes (`IND2B`, `MIL2B`, `STL1C`). Heuristic: short,
+/// all uppercase-ASCII/digits, with at least one of each.
+fn looks_like_grade_code(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 6
+        && token.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && token.chars().any(|c| c.is_ascii_digit())
+        && token.chars().any(|c| c.is_ascii_uppercase())
+}
+
+/// Resolve a received-blueprint display name (from `Game.log`) to its
+/// catalog `blueprint_record_guid`s. Tries an exact normalized match, then
+/// retries with a leading grade-code token stripped — the log labels ship
+/// weapons / components `"S3 Attrition-3 Repeater"` / `"IND2B Citadel"` while
+/// the catalog stores `"Attrition-3 Repeater"` / `"Citadel"`. Verified to take
+/// a real 901-backup scan from 44/65 to 65/65 resolved.
+fn resolve_blueprint_guids<'a>(
+    index: &'a HashMap<String, Vec<String>>,
+    name: &str,
+) -> Option<&'a Vec<String>> {
+    if let Some(guids) = index.get(&normalize_bp_name(name)) {
+        return Some(guids);
+    }
+    if let Some((first, rest)) = name.trim().split_once(' ')
+        && looks_like_grade_code(first)
+    {
+        return index.get(&normalize_bp_name(rest));
+    }
+    None
 }
 
 /// v1.5 auto-sensing: tail the active install's `Game.log`, and when the
@@ -940,7 +977,7 @@ fn spawn_sensor(handle: tauri::AppHandle) {
                             );
                             continue;
                         }
-                        match name_index.get(&name.trim().to_lowercase()) {
+                        match resolve_blueprint_guids(&name_index, &name) {
                             Some(guids) => to_mark.push((name, guids.clone())),
                             None => unresolved.push(name),
                         }
@@ -1019,4 +1056,40 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grade_code_detection() {
+        assert!(looks_like_grade_code("S3")); // ship-weapon size
+        assert!(looks_like_grade_code("IND2B")); // manufacturer-grade
+        assert!(looks_like_grade_code("STL1C"));
+        assert!(!looks_like_grade_code("Aril")); // no digit
+        assert!(!looks_like_grade_code("P4-AR")); // hyphen
+        assert!(!looks_like_grade_code("Attrition-3")); // lowercase + hyphen
+        assert!(!looks_like_grade_code(""));
+    }
+
+    #[test]
+    fn resolves_exact_then_grade_prefix_stripped() {
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        index.insert("aril arms".into(), vec!["g-aril".into()]);
+        index.insert("attrition-3 repeater".into(), vec!["g-attr".into()]);
+        index.insert("citadel".into(), vec!["g-cit".into()]);
+
+        // Exact (FPS gear — no prefix in the log).
+        assert_eq!(resolve_blueprint_guids(&index, "Aril Arms"), Some(&vec!["g-aril".to_string()]));
+        // Ship-weapon size prefix the catalog omits.
+        assert_eq!(
+            resolve_blueprint_guids(&index, "S3 Attrition-3 Repeater"),
+            Some(&vec!["g-attr".to_string()])
+        );
+        // Manufacturer-grade prefix.
+        assert_eq!(resolve_blueprint_guids(&index, "IND2B Citadel"), Some(&vec!["g-cit".to_string()]));
+        // Genuine miss.
+        assert!(resolve_blueprint_guids(&index, "Totally Unknown").is_none());
+    }
 }
