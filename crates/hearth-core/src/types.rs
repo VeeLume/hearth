@@ -5,8 +5,9 @@
 //!   `citizen_record` + `enlisted` are immutable anchors scraped from
 //!   `/citizens/<handle>` once the user signs in (left `None` for the
 //!   no-sign-in default path).
-//! - `OwnedBlueprint`, `MissionCompletion`, `WishlistEntry` are the
-//!   persisted personal-state records. Scoped by `(account_id, platform)`.
+//! - `OwnedBlueprint`, `WishlistEntry` are the persisted personal-state
+//!   records. Scoped by `(account_id, platform)`. (Mission completion is
+//!   *derived* from BP ownership, not stored.)
 //! - `BpView` is the lean shape sent over the Tauri IPC boundary for the
 //!   blueprint catalog UI.
 
@@ -131,23 +132,6 @@ pub struct OwnedBlueprint {
     pub owned_at: DateTime<Utc>,
 }
 
-/// A completed mission with optionally-collected non-repeatable rewards.
-/// Many missions are repeatable; this tracks "I've done this mission and
-/// claimed/missed these specific BP rewards." A separate child table in
-/// storage (`mission_rewards_collected`) holds which rewards were grabbed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct MissionCompletion {
-    pub id: RecordId,
-    pub mission_id: String,
-    pub platform: Platform,
-    /// FK to `accounts.id`.
-    pub account_id: RecordId,
-    pub completed_at: DateTime<Utc>,
-    /// `blueprint_guid`s of non-repeatable BP rewards the user collected
-    /// when they did this mission.
-    pub rewards_collected: Vec<String>,
-}
-
 /// What a wishlist entry expresses. A blueprint↔item is 1:1, but "I want
 /// this" is ambiguous between wanting the recipe and wanting a crafted
 /// copy — two independent goals a single BP can carry at once.
@@ -211,7 +195,7 @@ pub struct WishlistEntry {
 /// intentionally omitted; reputation carries the raw faction GUID for now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct MissionView {
-    /// Contract GUID, hex-string form. The id `mission_completions` keys on.
+    /// Contract GUID, hex-string form. Stable id for UI keys.
     pub mission_id: String,
     /// Resolved title; `None` → the UI falls back to `debug_name`.
     pub title: Option<String>,
@@ -220,8 +204,7 @@ pub struct MissionView {
     /// Resolved description. May contain `~mission(...)` runtime-substitution
     /// markers the engine fills at spawn time.
     pub description: Option<String>,
-    /// `availability.once_only` — non-repeatable. These are the missions
-    /// whose non-repeatable BP rewards are worth tracking as collected.
+    /// `availability.once_only` — non-repeatable.
     pub once_only: bool,
     pub shareable: bool,
     pub illegal: bool,

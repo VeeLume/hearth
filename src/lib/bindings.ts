@@ -79,44 +79,6 @@ async toggleWishlist(blueprintGuid: string, intent: WishIntent) : Promise<Result
 }
 },
 /**
- * Every mission completion in the active scope, each carrying the
- * `blueprint_guid`s of the non-repeatable BP rewards collected.
- */
-async listMissionCompletions() : Promise<Result<MissionCompletion[], AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("list_mission_completions") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Flip a mission's completed state in the active scope. Returns the new
- * state (`true` = now completed). Un-completing cascades its collected
- * rewards away.
- */
-async toggleMissionCompleted(missionId: string) : Promise<Result<boolean, AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("toggle_mission_completed", { missionId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Flip whether a specific BP reward was collected for a mission. Collecting
- * a reward implies the mission is done, so this ensures the completion row
- * exists first. Returns the new collected state (`true` = now collected).
- */
-async toggleRewardCollected(missionId: string, blueprintGuid: string) : Promise<Result<boolean, AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("toggle_reward_collected", { missionId, blueprintGuid }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Surface the active platform + channel + account so the UI can show
  * "PU · LIVE · @VeeLume" or similar. Fast — needs only discovery + db,
  * not the catalog, so the sidebar renders without waiting on the DCB
@@ -380,22 +342,6 @@ export type ItemRewardView = { entity_guid: string;
  */
 name: string | null; amount: number }
 /**
- * A completed mission with optionally-collected non-repeatable rewards.
- * Many missions are repeatable; this tracks "I've done this mission and
- * claimed/missed these specific BP rewards." A separate child table in
- * storage (`mission_rewards_collected`) holds which rewards were grabbed.
- */
-export type MissionCompletion = { id: RecordId; mission_id: string; platform: Platform; 
-/**
- * FK to `accounts.id`.
- */
-account_id: RecordId; completed_at: string; 
-/**
- * `blueprint_guid`s of non-repeatable BP rewards the user collected
- * when they did this mission.
- */
-rewards_collected: string[] }
-/**
  * Lean view of a mission/contract for the Missions UI.
  * 
  * Built from `sc_missions::Mission` (+ its `BlueprintPools`) in the loader.
@@ -406,7 +352,7 @@ rewards_collected: string[] }
  */
 export type MissionView = { 
 /**
- * Contract GUID, hex-string form. The id `mission_completions` keys on.
+ * Contract GUID, hex-string form. Stable id for UI keys.
  */
 mission_id: string; 
 /**
@@ -423,8 +369,7 @@ debug_name: string;
  */
 description: string | null; 
 /**
- * `availability.once_only` — non-repeatable. These are the missions
- * whose non-repeatable BP rewards are worth tracking as collected.
+ * `availability.once_only` — non-repeatable.
  */
 once_only: boolean; shareable: boolean; illegal: boolean; 
 /**

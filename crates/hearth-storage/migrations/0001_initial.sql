@@ -37,27 +37,11 @@ CREATE INDEX idx_owned_blueprints_scope
     ON owned_blueprints(platform_id, account_id);
 
 
-CREATE TABLE mission_completions (
-    id            TEXT PRIMARY KEY,
-    mission_id    TEXT NOT NULL,
-    platform_id   TEXT NOT NULL,
-    account_id    TEXT NOT NULL
-        REFERENCES accounts(id) ON DELETE CASCADE,
-    completed_at  TEXT NOT NULL,
-    UNIQUE(mission_id, platform_id, account_id)
-);
-
-CREATE INDEX idx_mission_completions_scope
-    ON mission_completions(platform_id, account_id);
-
-
-CREATE TABLE mission_rewards_collected (
-    mission_completion_id  TEXT NOT NULL
-        REFERENCES mission_completions(id) ON DELETE CASCADE,
-    blueprint_guid         TEXT NOT NULL,
-    PRIMARY KEY (mission_completion_id, blueprint_guid)
-);
-
+-- Mission completion is *derived*, not stored: a mission counts as
+-- "exhausted" when the user owns every BP across its reward pool(s)
+-- (computed from owned_blueprints). Hearth is blueprint-focused, so a
+-- mission's only tracked value is "can it still give me a BP I lack?".
+-- No mission_completions / mission_rewards_collected tables.
 
 CREATE TABLE wishlist_entries (
     id              TEXT PRIMARY KEY,
