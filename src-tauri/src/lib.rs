@@ -34,6 +34,7 @@ use tauri_specta::{Builder, collect_commands};
 use tokio::sync::OnceCell;
 
 pub mod error;
+pub mod export;
 pub mod identity;
 pub mod sc_loader;
 pub mod sensors;
@@ -149,6 +150,34 @@ impl AppState {
         let account = self.active_account().await?;
         Ok(Scope::new(platform, account.id))
     }
+
+    /// Rewrite the sc-langpatch owned-blueprints export (Stage 4) from the
+    /// active scope's owned set. Best-effort: a failure is logged, never
+    /// surfaced, so it can't break the ownership toggle that triggered it —
+    /// the file is regenerated on the next change. Called after every
+    /// ownership mutation and once at warmup so langpatch's startup read
+    /// finds a current file.
+    async fn refresh_owned_export(&self) {
+        if let Err(e) = self.try_refresh_owned_export().await {
+            tracing::warn!("owned-blueprints export skipped: {e:#}");
+        }
+    }
+
+    async fn try_refresh_owned_export(&self) -> Result<(), AppError> {
+        let scope = self.active_scope().await?;
+        let db = self.db().await?;
+        let guids: Vec<String> = hearth_storage::list_owned(db, scope)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?
+            .into_iter()
+            .map(|o| o.blueprint_guid)
+            .collect();
+        // FS work off the async executor.
+        tokio::task::spawn_blocking(move || export::write_owned(&guids))
+            .await
+            .map_err(|e| AppError::Internal(format!("export join: {e}")))?
+            .map_err(|e| AppError::Internal(format!("{e:#}")))
+    }
 }
 
 /// `%APPDATA%/hearth/hearth.db` on Windows.
@@ -202,9 +231,11 @@ async fn add_owned(
 ) -> Result<OwnedBlueprint, AppError> {
     let scope = state.active_scope().await?;
     let db = state.db().await?;
-    hearth_storage::add_owned(db, scope, &blueprint_guid)
+    let added = hearth_storage::add_owned(db, scope, &blueprint_guid)
         .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    state.refresh_owned_export().await;
+    Ok(added)
 }
 
 #[tauri::command]
@@ -215,9 +246,11 @@ async fn remove_owned(
 ) -> Result<bool, AppError> {
     let scope = state.active_scope().await?;
     let db = state.db().await?;
-    hearth_storage::remove_owned(db, scope, &blueprint_guid)
+    let removed = hearth_storage::remove_owned(db, scope, &blueprint_guid)
         .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    state.refresh_owned_export().await;
+    Ok(removed)
 }
 
 /// Flip ownership of a blueprint in the active scope. Returns the new
@@ -234,17 +267,19 @@ async fn toggle_owned(
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))?
         .is_some();
-    if currently_owned {
+    let now_owned = if currently_owned {
         hearth_storage::remove_owned(db, scope, &blueprint_guid)
             .await
             .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        Ok(false)
+        false
     } else {
         hearth_storage::add_owned(db, scope, &blueprint_guid)
             .await
             .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        Ok(true)
-    }
+        true
+    };
+    state.refresh_owned_export().await;
+    Ok(now_owned)
 }
 
 #[tauri::command]
@@ -439,6 +474,9 @@ fn spawn_warmup(handle: tauri::AppHandle) {
         // can then run concurrently.
         if state.discovery().await.is_ok() {
             let _ = tokio::join!(state.catalog(), state.db());
+            // Seed the langpatch export so a current file exists before the
+            // first ownership toggle (best-effort; logs on failure).
+            state.refresh_owned_export().await;
         } else {
             // No install: at least try the DB so personal-state queries
             // get a clean DB error instead of a slow no-pool wait.
