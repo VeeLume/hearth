@@ -342,21 +342,25 @@ export type ItemRewardView = { entity_guid: string;
  */
 name: string | null; amount: number }
 /**
- * Lean view of a mission/contract for the Missions UI.
+ * Lean view of a mission **template** for the Missions UI.
  * 
- * Built from `sc_missions::Mission` (+ its `BlueprintPools`) in the loader.
- * Focused on the reward axes hearth surfaces — blueprints first, plus the
- * common reward kinds (aUEC, scrip, reputation, item unlocks). Heavy mission
- * detail (encounters, prerequisites, localities, factions-by-name) is
- * intentionally omitted; reputation carries the raw faction GUID for now.
+ * Built from `sc_missions::Mission` (+ its `BlueprintPools` / `Localities`)
+ * in the loader. CIG spawns one contract per offered locality, so the raw
+ * list has thousands of near-duplicates; the loader **pools** contracts that
+ * share a `(title_key, description_key)` into one template (the mission a
+ * player perceives), aggregating the localities into [`Self::regions`].
+ * Reward axes are surfaced for the blueprint focus (blueprints first), plus
+ * aUEC / scrip / reputation / item unlocks. Reputation carries the raw
+ * faction GUID for now.
  */
 export type MissionView = { 
 /**
- * Contract GUID, hex-string form. Stable id for UI keys.
+ * Representative contract GUID, hex-string form. Stable id for UI keys.
  */
 mission_id: string; 
 /**
  * Resolved title; `None` → the UI falls back to `debug_name`.
+ * `~mission(Var)` runtime markers are rendered as readable `[Var]`.
  */
 title: string | null; 
 /**
@@ -364,8 +368,8 @@ title: string | null;
  */
 debug_name: string; 
 /**
- * Resolved description. May contain `~mission(...)` runtime-substitution
- * markers the engine fills at spawn time.
+ * Resolved description, with `~mission(Var)` → `[Var]`. Real line breaks
+ * (the locale stores them as the literal two-char `\n`).
  */
 description: string | null; 
 /**
@@ -385,9 +389,24 @@ uec_fixed: number | null;
  */
 uec_calculated: boolean; scrip: ScripRewardView[]; reputation: RepRewardView[]; item_rewards: ItemRewardView[]; 
 /**
- * Blueprint-pool rewards — each a weighted pool the contract draws from.
+ * Blueprint-pool rewards — each a weighted pool the contract draws from
+ * (union across the pooled contracts, deduped by pool).
  */
-blueprint_rewards: BpPoolReward[] }
+blueprint_rewards: BpPoolReward[]; 
+/**
+ * Distinct region labels (`"Pyro: Bloom"`) across the pooled contracts'
+ * localities — where the mission is offered.
+ */
+regions: string[]; 
+/**
+ * One-line encounter banner (`"2-4 ships · VeryEasy"`), or `None` when
+ * the mission has no ship/entity encounters.
+ */
+encounter_summary: string | null; 
+/**
+ * How many spawned contracts this template pools (offered-at-N count).
+ */
+instance_count: number }
 /**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be

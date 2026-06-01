@@ -40,6 +40,17 @@
   const missionTitle = (m: MissionView) => m.title ?? m.debug_name;
   const grantsBp = (m: MissionView) => m.blueprint_rewards.length > 0;
 
+  /** Distinct star systems from region labels ("Pyro: Bloom" → "Pyro"). A
+   *  compact location hint for the row; the full regions show on expand. */
+  function systemsOf(regions: string[]): string[] {
+    const sys = new Set<string>();
+    for (const r of regions) {
+      const head = r.split(":")[0].split(" (")[0].trim();
+      for (const s of head.split(" + ")) if (s.trim()) sys.add(s.trim());
+    }
+    return [...sys];
+  }
+
   // Distinct reward blueprint guids per mission (built once per mission load).
   const bpGuidsByMission = $derived.by(() => {
     const map = new Map<string, string[]>();
@@ -175,10 +186,17 @@
             <button class="m-expand" onclick={() => toggleExpanded(m.mission_id)}>
               <span class="chevron" class:open={isOpen} aria-hidden="true">▸</span>
               <span class="m-name" class:untitled={!m.title}>{missionTitle(m)}</span>
+              {#if m.regions.length}
+                {@const systems = systemsOf(m.regions)}
+                <span class="loc" title={m.regions.join(" · ")}>⌖ {systems.join(", ") || m.regions[0]}</span>
+              {/if}
               {#if m.once_only}<span class="badge once" title="Non-repeatable">once</span>{/if}
               {#if m.illegal}<span class="badge illegal" title="Illegal contract">illegal</span>{/if}
               {#if guids.length > 0}
                 <span class="badge bp" title="Awards blueprints">{guids.length} BP</span>
+              {/if}
+              {#if m.instance_count > 1}
+                <span class="badge inst" title="Offered at {m.instance_count} localities">×{m.instance_count}</span>
               {/if}
             </button>
           </div>
@@ -190,6 +208,18 @@
                      (the engine interprets them); convert to real newlines and
                      let CSS render them (.m-desc is white-space: pre-line). -->
                 <p class="m-desc">{m.description.replaceAll("\\n", "\n")}</p>
+              {/if}
+
+              <!-- Where it's offered + encounter banner. -->
+              {#if m.regions.length || m.encounter_summary}
+                <div class="meta">
+                  {#if m.regions.length}
+                    <span class="meta-item"><span class="meta-k">Location</span> {m.regions.join(" · ")}</span>
+                  {/if}
+                  {#if m.encounter_summary}
+                    <span class="meta-item"><span class="meta-k">Encounters</span> {m.encounter_summary}</span>
+                  {/if}
+                </div>
               {/if}
 
               <!-- Reward summary (non-blueprint axes). -->
@@ -379,8 +409,26 @@
   .badge.once { color: var(--ember); border-color: var(--ember-dim); }
   .badge.illegal { color: var(--bad); border-color: var(--bad); }
   .badge.bp { color: var(--ember); background: var(--ember-glow); border-color: var(--ember-dim); font-variant-numeric: tabular-nums; }
+  .badge.inst { font-variant-numeric: tabular-nums; }
+  /* Location hint on the row — distinct from the grey structural badges. */
+  .loc {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    color: var(--ember);
+    background: var(--ember-glow);
+    border: 1px solid var(--ember-dim);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
+    max-width: 16ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .m-detail { padding: 0.2rem 0.8rem 0.8rem 2.8rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: 0.2rem 1.1rem; margin-bottom: 0.5rem; }
+  .meta-item { font-size: 0.78rem; color: var(--text); }
+  .meta-k { color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.64rem; margin-right: 0.35rem; }
   .m-desc { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--muted); max-width: 70ch; white-space: pre-line; }
 
   .rewards { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }

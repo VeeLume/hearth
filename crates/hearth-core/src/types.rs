@@ -186,23 +186,27 @@ pub struct WishlistEntry {
     pub added_at: DateTime<Utc>,
 }
 
-/// Lean view of a mission/contract for the Missions UI.
+/// Lean view of a mission **template** for the Missions UI.
 ///
-/// Built from `sc_missions::Mission` (+ its `BlueprintPools`) in the loader.
-/// Focused on the reward axes hearth surfaces — blueprints first, plus the
-/// common reward kinds (aUEC, scrip, reputation, item unlocks). Heavy mission
-/// detail (encounters, prerequisites, localities, factions-by-name) is
-/// intentionally omitted; reputation carries the raw faction GUID for now.
+/// Built from `sc_missions::Mission` (+ its `BlueprintPools` / `Localities`)
+/// in the loader. CIG spawns one contract per offered locality, so the raw
+/// list has thousands of near-duplicates; the loader **pools** contracts that
+/// share a `(title_key, description_key)` into one template (the mission a
+/// player perceives), aggregating the localities into [`Self::regions`].
+/// Reward axes are surfaced for the blueprint focus (blueprints first), plus
+/// aUEC / scrip / reputation / item unlocks. Reputation carries the raw
+/// faction GUID for now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct MissionView {
-    /// Contract GUID, hex-string form. Stable id for UI keys.
+    /// Representative contract GUID, hex-string form. Stable id for UI keys.
     pub mission_id: String,
     /// Resolved title; `None` → the UI falls back to `debug_name`.
+    /// `~mission(Var)` runtime markers are rendered as readable `[Var]`.
     pub title: Option<String>,
     /// Internal contract debug name — fallback label + DCB cross-ref.
     pub debug_name: String,
-    /// Resolved description. May contain `~mission(...)` runtime-substitution
-    /// markers the engine fills at spawn time.
+    /// Resolved description, with `~mission(Var)` → `[Var]`. Real line breaks
+    /// (the locale stores them as the literal two-char `\n`).
     pub description: Option<String>,
     /// `availability.once_only` — non-repeatable.
     pub once_only: bool,
@@ -217,8 +221,17 @@ pub struct MissionView {
     pub scrip: Vec<ScripRewardView>,
     pub reputation: Vec<RepRewardView>,
     pub item_rewards: Vec<ItemRewardView>,
-    /// Blueprint-pool rewards — each a weighted pool the contract draws from.
+    /// Blueprint-pool rewards — each a weighted pool the contract draws from
+    /// (union across the pooled contracts, deduped by pool).
     pub blueprint_rewards: Vec<BpPoolReward>,
+    /// Distinct region labels (`"Pyro: Bloom"`) across the pooled contracts'
+    /// localities — where the mission is offered.
+    pub regions: Vec<String>,
+    /// One-line encounter banner (`"2-4 ships · VeryEasy"`), or `None` when
+    /// the mission has no ship/entity encounters.
+    pub encounter_summary: Option<String>,
+    /// How many spawned contracts this template pools (offered-at-N count).
+    pub instance_count: u32,
 }
 
 /// A typed-currency (scrip) reward on a mission.

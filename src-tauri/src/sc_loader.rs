@@ -61,6 +61,7 @@
 //!
 //! `discover` does *not* need the big stack — it never touches the DCB.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -72,13 +73,13 @@ use hearth_core::{
     ScripRewardView,
 };
 use sc_holotable::asset::{
-    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleMap, ProcessedSnapshot,
-    RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
+    AssetConfig, AssetData, AssetSource, Datacore, ExtractSnapshot, LocaleKey, LocaleMap,
+    ProcessedSnapshot, RecordPaths, SnapshotCaptureConfig, snapshot_meta_from_install,
 };
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::install::{Channel, Installation};
 use sc_holotable::items::{ItemCatalog, Items};
-use sc_holotable::missions::{Missions, RewardAmount, RewardCurrencies};
+use sc_holotable::missions::{Mission, Missions, RewardAmount, RewardCurrencies};
 use sc_holotable::resources::Resources;
 
 pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -87,8 +88,9 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// cooked [`CookedData`] serde shape changes ([`BpView`] or [`MissionView`]
 /// fields added/renamed/retyped) so older caches invalidate cleanly via
 /// `Error::ProcessedSnapshotStale` instead of deserializing into a
-/// silently-wrong shape. (11: added the mission browser data.)
-const HEARTH_CATALOG_COOK_VERSION: u32 = 11;
+/// silently-wrong shape. (17: mission pool key now includes encounter shape
+/// (difficulty tiers split); diagnostic removed.)
+const HEARTH_CATALOG_COOK_VERSION: u32 = 17;
 
 const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
@@ -510,20 +512,52 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     out
 }
 
-/// Build the mission browser data: every contract with its resolved title /
-/// availability and its reward axes (aUEC, scrip, reputation, item unlocks,
-/// blueprint pools). The blueprint-pool rewards are resolved through the
-/// pools the mission index builds internally (`Missions::blueprints`), so
-/// each reward carries the weighted, named blueprint entries the UI shows.
+/// Build the mission browser data. CIG spawns one contract per offered
+/// locality, so the raw list is thousands of near-duplicates; we **pool**
+/// contracts that share a `(title_key, description_key)` into one template
+/// (the mission a player perceives) and aggregate their localities into
+/// `regions`. Per template we surface the reward axes (aUEC, scrip,
+/// reputation, item unlocks, blueprint pools — the last resolved through
+/// `Missions::blueprints`), a one-line encounter banner, and the count of
+/// pooled instances.
 fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
     let items = Items::build(datacore.records());
     let currencies = RewardCurrencies::build(datacore);
     let missions = Missions::build(datacore);
     let pools = &missions.blueprints;
+    let localities = &missions.localities;
 
-    let mut out = Vec::new();
+    // Group contracts into templates. Localities are *aggregated* (same
+    // mission offered in many places = one row with a region list), not split
+    // — splitting by location would re-introduce the duplication we set out to
+    // remove. Templates are kept distinct by the axes that make missions
+    // genuinely different:
+    //   - reward identity (faction-specific pools, rep faction, scrip, …),
+    //   - encounter shape (difficulty tiers — a 2-ship VeryEasy and a 4-ship
+    //     Hard version of one contract are different missions).
+    // Validated against SCMDB's blueprint-mission count via a diagnostic:
+    // title+desc+reward = 459, +encounter = 483 (~87% of SCMDB's 558; the
+    // rest is SCMDB splitting by location/standing, which we deliberately
+    // don't).
+    type PoolKey = (Option<LocaleKey>, Option<LocaleKey>, String, String);
+    let mut groups: HashMap<PoolKey, Vec<&Mission>> = HashMap::new();
     for m in missions.iter() {
-        let r = &m.rewards;
+        let key = (
+            m.title_key.clone(),
+            m.description_key.clone(),
+            reward_signature(m),
+            encounter_summary(m).unwrap_or_default(),
+        );
+        groups.entry(key).or_default().push(m);
+    }
+
+    let mut out = Vec::with_capacity(groups.len());
+    for members in groups.values() {
+        // Members share title/description/rewards (same template); the first
+        // is the representative. Localities are what vary → aggregated below.
+        let rep = members[0];
+        let r = &rep.rewards;
+
         let (uec_fixed, uec_calculated) = match r.uec {
             RewardAmount::Fixed(n) => (Some(n), false),
             RewardAmount::Calculated => (None, true),
@@ -559,11 +593,18 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
                 amount: it.amount,
             })
             .collect();
-        let blueprint_rewards = r
-            .blueprints
-            .iter()
-            .filter_map(|br| {
-                let pool = pools.get(&br.pool_guid)?;
+
+        // Blueprint rewards: union of distinct pools across members.
+        let mut seen_pools = HashSet::new();
+        let mut blueprint_rewards = Vec::new();
+        for m in members {
+            for br in &m.rewards.blueprints {
+                if !seen_pools.insert(br.pool_guid) {
+                    continue;
+                }
+                let Some(pool) = pools.get(&br.pool_guid) else {
+                    continue;
+                };
                 let blueprints = pool
                     .items
                     .iter()
@@ -573,23 +614,38 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
                         weight: e.weight,
                     })
                     .collect();
-                Some(BpPoolReward {
+                blueprint_rewards.push(BpPoolReward {
                     pool_name: pool.name.clone(),
                     chance: br.chance,
                     blueprints,
-                })
-            })
-            .collect();
+                });
+            }
+        }
+
+        // Regions: distinct locality labels across all pooled members.
+        let mut seen_regions = HashSet::new();
+        let mut regions = Vec::new();
+        for m in members {
+            for guid in &m.mission_span {
+                if let Some(view) = localities.get(guid) {
+                    let label = view.region_label(locale);
+                    if !label.is_empty() && seen_regions.insert(label.clone()) {
+                        regions.push(label);
+                    }
+                }
+            }
+        }
+        regions.sort();
 
         out.push(MissionView {
-            mission_id: guid_string(&m.id),
-            title: m.title(locale).map(str::to_owned),
-            debug_name: m.debug_name.clone(),
-            description: m.description(locale).map(str::to_owned),
-            once_only: m.availability.once_only,
-            shareable: m.shareable,
-            illegal: m.illegal_flag,
-            cooldown_seconds: m
+            mission_id: guid_string(&rep.id),
+            title: rep.title(locale).map(clean_mission_text),
+            debug_name: rep.debug_name.clone(),
+            description: rep.description(locale).map(clean_mission_text),
+            once_only: rep.availability.once_only,
+            shareable: rep.shareable,
+            illegal: rep.illegal_flag,
+            cooldown_seconds: rep
                 .availability
                 .cooldowns
                 .completion
@@ -601,9 +657,102 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
             reputation,
             item_rewards,
             blueprint_rewards,
+            regions,
+            encounter_summary: encounter_summary(rep),
+            instance_count: members.len() as u32,
         });
     }
+
+    // Stable, readable order: by title (debug_name fallback), then id.
+    out.sort_by(|a, b| {
+        a.title
+            .as_deref()
+            .unwrap_or(&a.debug_name)
+            .cmp(b.title.as_deref().unwrap_or(&b.debug_name))
+            .then_with(|| a.mission_id.cmp(&b.mission_id))
+    });
     out
+}
+
+/// Distinguishing reward identity for pooling. Two contracts sharing a
+/// title+description but different rewards are different missions — most
+/// tellingly the **reputation faction** (the giving faction), plus the BP
+/// pools, scrip currencies, item unlocks, and any fixed aUEC. (Calculated
+/// aUEC is engine-computed and not a stable splitter, so it's excluded.)
+fn reward_signature(m: &Mission) -> String {
+    let r = &m.rewards;
+    let mut parts: Vec<String> = Vec::new();
+    for br in &r.blueprints {
+        parts.push(format!("b{}", guid_string(&br.pool_guid)));
+    }
+    for rep in &r.reputation {
+        if let Some(f) = &rep.faction {
+            parts.push(format!("r{}", guid_string(f)));
+        }
+    }
+    for s in &r.scrip {
+        parts.push(format!("s{}", guid_string(&s.currency_guid)));
+    }
+    for it in &r.items {
+        parts.push(format!("i{}", guid_string(&it.entity_class)));
+    }
+    if let RewardAmount::Fixed(n) = r.uec {
+        parts.push(format!("u{n}"));
+    }
+    parts.sort();
+    parts.dedup();
+    parts.join(",")
+}
+
+/// Render `~mission(Var)` runtime-substitution markers as readable `[Var]`
+/// placeholders (the engine fills these per spawn; a static view can't).
+fn clean_mission_text(s: &str) -> String {
+    const MARK: &str = "~mission(";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find(MARK) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + MARK.len()..];
+        match after.find(')') {
+            Some(end) => {
+                out.push('[');
+                out.push_str(&after[..end]);
+                out.push(']');
+                rest = &after[end + 1..];
+            }
+            None => {
+                // Unterminated marker — emit the remainder verbatim.
+                out.push_str(&rest[pos..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One-line encounter banner — `"2-4 ships · VeryEasy"`. `None` when the
+/// mission has no ship/entity encounters and no combat class.
+fn encounter_summary(m: &sc_holotable::missions::Mission) -> Option<String> {
+    let (min, max) = m.ship_count_range();
+    let class = m.combat_class();
+    if max == 0 && class.is_none() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if max > 0 {
+        let count = if min == max {
+            max.to_string()
+        } else {
+            format!("{min}-{max}")
+        };
+        let noun = if max == 1 { "ship" } else { "ships" };
+        parts.push(format!("{count} {noun}"));
+    }
+    if let Some(c) = class {
+        parts.push(c.to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Fill `Ingredient.resource_name` for each ingredient by looking up
