@@ -58,6 +58,9 @@ struct AppState {
     data: OnceCell<sc_loader::CookedData>,
     /// SQLite pool, lazily initialized on first DB-needing command.
     db: OnceCell<DbPool>,
+    /// Cached result of the last `scan_log_history` so `apply_log_import`
+    /// doesn't re-read the ~900 backup logs. Cleared after a successful apply.
+    import_scan: std::sync::Mutex<Vec<ScannedIdentity>>,
 }
 
 impl AppState {
@@ -66,6 +69,7 @@ impl AppState {
             discovery: OnceCell::new(),
             data: OnceCell::new(),
             db: OnceCell::new(),
+            import_scan: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -186,6 +190,137 @@ fn db_path() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("hearth").join("hearth.db"))
         .expect("OS data dir not resolvable")
+}
+
+// ── Account identity / log-history import ─────────────────────────────────────
+
+/// One RSI identity discovered across the session logs — a `(account_hint
+/// else handle)` group. Cached between `scan_log_history` and
+/// `apply_log_import` so the heavy log read happens once. Internal (not over
+/// the IPC boundary); the UI sees the leaner [`DiscoveredIdentity`].
+#[derive(Debug, Clone)]
+struct ScannedIdentity {
+    /// Stable grouping key echoed back by the UI in an [`ImportChoice`].
+    key: String,
+    account_hint: Option<i64>,
+    /// Distinct handles seen for this identity (rename history), first-seen order.
+    handles: Vec<String>,
+    /// Distinct blueprint display names received across the grouped sessions.
+    blueprint_names: Vec<String>,
+    session_count: u32,
+}
+
+/// An account plus its recorded past handles — the Accounts UI shape.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct AccountWithAliases {
+    account: Account,
+    aliases: Vec<String>,
+}
+
+/// A discovered identity surfaced to the UI for classification.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct DiscoveredIdentity {
+    key: String,
+    account_hint: Option<i64>,
+    handles: Vec<String>,
+    session_count: u32,
+    blueprint_count: u32,
+    /// Best-guess existing account this maps to (handle/alias/hint match).
+    suggested_account_id: Option<RecordId>,
+    /// That account's current handle, for display.
+    suggested_handle: Option<String>,
+}
+
+/// The UI's decision for one discovered identity.
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+struct ImportChoice {
+    key: String,
+    /// `"existing"` (use `account_id`), `"new"` (create from the identity's
+    /// primary handle), or `"ignore"`.
+    action: String,
+    account_id: Option<RecordId>,
+}
+
+/// Summary of an applied import.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct ImportResult {
+    accounts_touched: u32,
+    newly_owned: u32,
+    /// Blueprint display names that matched no catalog entry (name drift).
+    unresolved: Vec<String>,
+}
+
+/// All session-log files for a channel: the live `Game.log` + every
+/// `logbackups/*.log`.
+fn session_log_files(channel_dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let live = sensors::game_log_path(channel_dir);
+    if live.exists() {
+        files.push(live);
+    }
+    if let Ok(entries) = std::fs::read_dir(sensors::log_backups_dir(channel_dir)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("log") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Read + summarise every session log (blocking — hundreds of files).
+fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::SessionSummary> {
+    session_log_files(channel_dir)
+        .into_iter()
+        .filter_map(|path| {
+            let file = std::fs::File::open(&path).ok()?;
+            Some(sensors::summarize_session(std::io::BufReader::new(file)))
+        })
+        .collect()
+}
+
+/// Group prod-only session summaries into identities, keyed by numeric
+/// `accountId` when present (so renames fold together) else by handle. PTU /
+/// test-shard sessions are excluded — those scopes wipe, so importing their
+/// history is pointless.
+fn group_identities(summaries: Vec<sensors::SessionSummary>) -> Vec<ScannedIdentity> {
+    let mut groups: HashMap<String, ScannedIdentity> = HashMap::new();
+    for s in summaries {
+        if s.platform != Some(Platform::Prod) {
+            continue;
+        }
+        let key = match (s.account_hint, s.handle.as_deref()) {
+            (Some(hint), _) => format!("hint:{hint}"),
+            (None, Some(handle)) => format!("handle:{}", handle.to_lowercase()),
+            (None, None) => continue, // anonymous session — nothing to attribute
+        };
+        let group = groups.entry(key.clone()).or_insert_with(|| ScannedIdentity {
+            key,
+            account_hint: s.account_hint,
+            handles: Vec::new(),
+            blueprint_names: Vec::new(),
+            session_count: 0,
+        });
+        group.session_count += 1;
+        if group.account_hint.is_none() {
+            group.account_hint = s.account_hint;
+        }
+        if let Some(handle) = &s.handle
+            && !group.handles.iter().any(|h| h.eq_ignore_ascii_case(handle))
+        {
+            group.handles.push(handle.clone());
+        }
+        for name in s.blueprint_names {
+            if !group.blueprint_names.contains(&name) {
+                group.blueprint_names.push(name);
+            }
+        }
+    }
+    let mut out: Vec<ScannedIdentity> = groups.into_values().collect();
+    // Most-played identities first.
+    out.sort_by(|a, b| b.session_count.cmp(&a.session_count).then(a.key.cmp(&b.key)));
+    out
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -387,6 +522,210 @@ struct ActiveScope {
     account: Account,
 }
 
+// ── Account management + log-history import ───────────────────────────────────
+
+/// Accounts with their recorded past handles, for the Accounts UI.
+#[tauri::command]
+#[specta::specta]
+async fn list_accounts_detailed(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<AccountWithAliases>, AppError> {
+    let db = state.db().await?;
+    let accounts = hearth_storage::list_accounts(db)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    let mut out = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let aliases = hearth_storage::list_account_aliases(db, account.id)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        out.push(AccountWithAliases { account, aliases });
+    }
+    Ok(out)
+}
+
+/// Manually record a past handle for an account (rename the model didn't catch).
+#[tauri::command]
+#[specta::specta]
+async fn add_account_alias(
+    state: tauri::State<'_, AppState>,
+    account_id: RecordId,
+    handle: String,
+) -> Result<Vec<AccountWithAliases>, AppError> {
+    let db = state.db().await?;
+    hearth_storage::add_account_alias(db, account_id, &handle)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    list_accounts_detailed(state).await
+}
+
+/// Merge one account into another (same person, two rows — e.g. a rename that
+/// created a duplicate). Reassigns owned + wishlist data; `from` is absorbed.
+/// Manual + explicit: the tool never auto-merges two accounts.
+#[tauri::command]
+#[specta::specta]
+async fn merge_accounts(
+    state: tauri::State<'_, AppState>,
+    from: RecordId,
+    into: RecordId,
+) -> Result<Vec<AccountWithAliases>, AppError> {
+    let db = state.db().await?;
+    hearth_storage::merge_accounts(db, from, into)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    // The active account's owned set may have changed — keep the export fresh.
+    state.refresh_owned_export().await;
+    list_accounts_detailed(state).await
+}
+
+/// Scan the install's session logs (live + `logbackups/`) and surface the RSI
+/// identities found, grouped by numeric `accountId` (renames fold together).
+/// Caches the full scan in-state for [`apply_log_import`].
+#[tauri::command]
+#[specta::specta]
+async fn scan_log_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<DiscoveredIdentity>, AppError> {
+    let channel_dir = state.discovery().await?.install.root.clone();
+    let summaries = tokio::task::spawn_blocking(move || summarize_all_sessions(&channel_dir))
+        .await
+        .map_err(|e| AppError::Internal(format!("log scan join: {e}")))?;
+    let identities = group_identities(summaries);
+
+    // Build the UI view with a suggested existing-account mapping.
+    let db = state.db().await?;
+    let accounts = hearth_storage::list_accounts(db)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    let mut discovered = Vec::with_capacity(identities.len());
+    for id in &identities {
+        // Suggest by handle/alias first, then by matching numeric hint.
+        let mut suggested = None;
+        for handle in &id.handles {
+            if let Some(account_id) = hearth_storage::account_id_for_handle(db, handle)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?
+            {
+                suggested = Some(account_id);
+                break;
+            }
+        }
+        if suggested.is_none()
+            && let Some(hint) = id.account_hint
+        {
+            suggested = accounts
+                .iter()
+                .find(|a| a.account_hint == Some(hint))
+                .map(|a| a.id);
+        }
+        let suggested_handle = suggested
+            .and_then(|sid| accounts.iter().find(|a| a.id == sid))
+            .map(|a| a.handle.clone());
+        discovered.push(DiscoveredIdentity {
+            key: id.key.clone(),
+            account_hint: id.account_hint,
+            handles: id.handles.clone(),
+            session_count: id.session_count,
+            blueprint_count: id.blueprint_names.len() as u32,
+            suggested_account_id: suggested,
+            suggested_handle,
+        });
+    }
+
+    *state.import_scan.lock().unwrap() = identities;
+    Ok(discovered)
+}
+
+/// Apply the user's classification of the scanned identities: create / alias
+/// accounts and mark their blueprints owned (prod scope). Uses the cached scan
+/// from [`scan_log_history`].
+#[tauri::command]
+#[specta::specta]
+async fn apply_log_import(
+    state: tauri::State<'_, AppState>,
+    choices: Vec<ImportChoice>,
+) -> Result<ImportResult, AppError> {
+    let scan = state.import_scan.lock().unwrap().clone();
+    if scan.is_empty() {
+        return Err(AppError::Internal(
+            "no scan to apply — run scan_log_history first".into(),
+        ));
+    }
+    let name_index = build_name_index(state.catalog().await?);
+    let db = state.db().await?;
+
+    let mut accounts_touched = 0u32;
+    let mut newly_owned = 0u32;
+    let mut unresolved: Vec<String> = Vec::new();
+
+    for choice in choices {
+        let Some(identity) = scan.iter().find(|i| i.key == choice.key) else {
+            continue;
+        };
+        // Resolve the target account per the choice.
+        let account_id = match choice.action.as_str() {
+            "ignore" => continue,
+            "existing" => match choice.account_id {
+                Some(id) => id,
+                None => continue,
+            },
+            "new" => {
+                let Some(primary) = identity.handles.first() else {
+                    continue;
+                };
+                hearth_storage::create_account(db, primary, identity.account_hint)
+                    .await
+                    .map_err(|e| AppError::Storage(format!("{e:#}")))?
+                    .id
+            }
+            _ => continue,
+        };
+        accounts_touched += 1;
+
+        // Record every observed handle as an alias + carry the numeric hint.
+        for handle in &identity.handles {
+            hearth_storage::add_account_alias(db, account_id, handle)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        }
+        if let Some(hint) = identity.account_hint {
+            hearth_storage::set_account_hint(db, account_id, hint)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        }
+
+        // Mark blueprints owned in the prod scope (history is prod-only).
+        let scope = hearth_storage::Scope::new(Platform::Prod, account_id);
+        for name in &identity.blueprint_names {
+            match name_index.get(&name.trim().to_lowercase()) {
+                Some(guids) => {
+                    for guid in guids {
+                        let already = hearth_storage::get_owned(db, scope, guid)
+                            .await
+                            .map_err(|e| AppError::Storage(format!("{e:#}")))?
+                            .is_some();
+                        if !already {
+                            hearth_storage::add_owned(db, scope, guid)
+                                .await
+                                .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+                            newly_owned += 1;
+                        }
+                    }
+                }
+                None => {
+                    if !unresolved.contains(name) {
+                        unresolved.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    state.import_scan.lock().unwrap().clear();
+    state.refresh_owned_export().await;
+    Ok(ImportResult { accounts_touched, newly_owned, unresolved })
+}
+
 // ── Debug commands ──────────────────────────────────────────────────────────
 
 /// Wipe the SC reference-data snapshot cache at
@@ -445,6 +784,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         active_scope,
         list_accounts,
         verify_account,
+        list_accounts_detailed,
+        add_account_alias,
+        merge_accounts,
+        scan_log_history,
+        apply_log_import,
         wipe_sc_cache,
     ])
 }

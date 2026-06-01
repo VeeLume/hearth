@@ -132,6 +132,67 @@ async verifyAccount(accountId: RecordId) : Promise<Result<Account, AppError>> {
 }
 },
 /**
+ * Accounts with their recorded past handles, for the Accounts UI.
+ */
+async listAccountsDetailed() : Promise<Result<AccountWithAliases[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_accounts_detailed") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Manually record a past handle for an account (rename the model didn't catch).
+ */
+async addAccountAlias(accountId: RecordId, handle: string) : Promise<Result<AccountWithAliases[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_account_alias", { accountId, handle }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Merge one account into another (same person, two rows — e.g. a rename that
+ * created a duplicate). Reassigns owned + wishlist data; `from` is absorbed.
+ * Manual + explicit: the tool never auto-merges two accounts.
+ */
+async mergeAccounts(from: RecordId, into: RecordId) : Promise<Result<AccountWithAliases[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("merge_accounts", { from, into }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Scan the install's session logs (live + `logbackups/`) and surface the RSI
+ * identities found, grouped by numeric `accountId` (renames fold together).
+ * Caches the full scan in-state for [`apply_log_import`].
+ */
+async scanLogHistory() : Promise<Result<DiscoveredIdentity[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_log_history") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply the user's classification of the scanned identities: create / alias
+ * accounts and mark their blueprints owned (prod scope). Uses the cached scan
+ * from [`scan_log_history`].
+ */
+async applyLogImport(choices: ImportChoice[]) : Promise<Result<ImportResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_log_import", { choices }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Wipe the SC reference-data snapshot cache at
  * `%APPDATA%/hearth/cache/` (every channel's `catalog.cook` +
  * `extract.snap`) and restart the app so the OnceCells in AppState
@@ -211,6 +272,10 @@ last_verified: string | null;
  * Optional cross-reference for log parsing. Never used as a key.
  */
 account_hint: number | null; created_at: string }
+/**
+ * An account plus its recorded past handles — the Accounts UI shape.
+ */
+export type AccountWithAliases = { account: Account; aliases: string[] }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
 export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
 /**
@@ -321,6 +386,35 @@ family_base_name: string | null;
  * crafted item has no recoverable ingredient list.
  */
 recipe: Recipe | null }
+/**
+ * A discovered identity surfaced to the UI for classification.
+ */
+export type DiscoveredIdentity = { key: string; account_hint: number | null; handles: string[]; session_count: number; blueprint_count: number; 
+/**
+ * Best-guess existing account this maps to (handle/alias/hint match).
+ */
+suggested_account_id: RecordId | null; 
+/**
+ * That account's current handle, for display.
+ */
+suggested_handle: string | null }
+/**
+ * The UI's decision for one discovered identity.
+ */
+export type ImportChoice = { key: string; 
+/**
+ * `"existing"` (use `account_id`), `"new"` (create from the identity's
+ * primary handle), or `"ignore"`.
+ */
+action: string; account_id: RecordId | null }
+/**
+ * Summary of an applied import.
+ */
+export type ImportResult = { accounts_touched: number; newly_owned: number; 
+/**
+ * Blueprint display names that matched no catalog entry (name drift).
+ */
+unresolved: string[] }
 /**
  * One resource ingredient in a [`Recipe`].
  */
