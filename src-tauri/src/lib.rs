@@ -20,10 +20,12 @@
 //! UI can show identity and accept clicks while the catalog builds in
 //! the background.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hearth_core::{
-    Account, BpView, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry,
+    Account, BpView, MissionRef, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent,
+    WishlistEntry,
 };
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -168,6 +170,18 @@ async fn list_blueprints(state: tauri::State<'_, AppState>) -> Result<Vec<BpView
 #[specta::specta]
 async fn list_missions(state: tauri::State<'_, AppState>) -> Result<Vec<MissionView>, AppError> {
     Ok(state.missions().await?.clone())
+}
+
+/// Map of `blueprint_record_guid → missions that grant it`, derived by
+/// inverting the cooked mission list. Powers the wishlist's ⚐ fulfilment slot
+/// ("which missions grant this blueprint?"). Awaits the same shared cooked
+/// data as `list_missions` — no extra load cost when the catalog is warm.
+#[tauri::command]
+#[specta::specta]
+async fn missions_by_blueprint(
+    state: tauri::State<'_, AppState>,
+) -> Result<HashMap<String, Vec<MissionRef>>, AppError> {
+    Ok(hearth_core::missions_by_blueprint(state.missions().await?))
 }
 
 #[tauri::command]
@@ -385,6 +399,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         list_blueprints,
         list_missions,
+        missions_by_blueprint,
         list_owned,
         add_owned,
         remove_owned,

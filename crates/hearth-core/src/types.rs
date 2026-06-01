@@ -283,6 +283,25 @@ pub struct BpRewardEntry {
     pub weight: f32,
 }
 
+/// A reference to a mission that grants a blueprint — the lean shape the
+/// wishlist's ⚐ fulfilment slot needs to answer "which missions grant this
+/// BP?". Derived (not stored) by inverting the cooked [`MissionView`] list;
+/// see [`crate::missions::missions_by_blueprint`]. Inverting the *pooled*
+/// `MissionView`s (rather than sc-missions' raw `missions_for_item`) keeps
+/// these refs consistent with the templates the Missions view renders —
+/// same `mission_id`, same title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct MissionRef {
+    /// Matches [`MissionView::mission_id`] so the UI can cross-reference the
+    /// Missions view.
+    pub mission_id: String,
+    /// Resolved mission title; `None` → UI falls back to the id / debug name.
+    pub title: Option<String>,
+    /// Mirrors [`MissionView::once_only`]. A non-repeatable source is worth
+    /// flagging — the BP can only be earned from it once.
+    pub once_only: bool,
+}
+
 /// Lean view of a craftable blueprint for the catalog UI.
 ///
 /// Constructed by `sc_data::bp_view`. All GUIDs are rendered as their

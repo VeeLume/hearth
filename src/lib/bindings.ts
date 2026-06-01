@@ -21,6 +21,20 @@ async listMissions() : Promise<Result<MissionView[], AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Map of `blueprint_record_guid → missions that grant it`, derived by
+ * inverting the cooked mission list. Powers the wishlist's ⚐ fulfilment slot
+ * ("which missions grant this blueprint?"). Awaits the same shared cooked
+ * data as `list_missions` — no extra load cost when the catalog is warm.
+ */
+async missionsByBlueprint() : Promise<Result<Partial<{ [key in string]: MissionRef[] }>, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("missions_by_blueprint") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listOwned() : Promise<Result<OwnedBlueprint[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_owned") };
@@ -341,6 +355,30 @@ export type ItemRewardView = { entity_guid: string;
  * Resolved item display name; `None` if it didn't resolve.
  */
 name: string | null; amount: number }
+/**
+ * A reference to a mission that grants a blueprint — the lean shape the
+ * wishlist's ⚐ fulfilment slot needs to answer "which missions grant this
+ * BP?". Derived (not stored) by inverting the cooked [`MissionView`] list;
+ * see [`crate::missions::missions_by_blueprint`]. Inverting the *pooled*
+ * `MissionView`s (rather than sc-missions' raw `missions_for_item`) keeps
+ * these refs consistent with the templates the Missions view renders —
+ * same `mission_id`, same title.
+ */
+export type MissionRef = { 
+/**
+ * Matches [`MissionView::mission_id`] so the UI can cross-reference the
+ * Missions view.
+ */
+mission_id: string; 
+/**
+ * Resolved mission title; `None` → UI falls back to the id / debug name.
+ */
+title: string | null; 
+/**
+ * Mirrors [`MissionView::once_only`]. A non-repeatable source is worth
+ * flagging — the BP can only be earned from it once.
+ */
+once_only: boolean }
 /**
  * Lean view of a mission **template** for the Missions UI.
  * 

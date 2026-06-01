@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, type BpView, type WishIntent } from "$lib/bindings";
+  import {
+    commands,
+    type BpView,
+    type MissionRef,
+    type WishIntent,
+  } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
   import { type Craftable, nameOf, collapseCraftables } from "$lib/catalog";
 
@@ -16,14 +21,17 @@
   let owned = new SvelteSet<string>();
   let wishRecipe = new SvelteSet<string>();
   let wishItem = new SvelteSet<string>();
+  // blueprint_record_guid → missions that grant it (the ⚐ fulfilment source).
+  let grantedBy = $state<Partial<Record<string, MissionRef[]>>>({});
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
 
   onMount(async () => {
-    const [bpResult, ownedResult, wishResult] = await Promise.all([
+    const [bpResult, ownedResult, wishResult, missionResult] = await Promise.all([
       commands.listBlueprints(),
       commands.listOwned(),
       commands.listWishlist(),
+      commands.missionsByBlueprint(),
     ]);
     if (bpResult.status === "ok") blueprints = bpResult.data;
     else errorMessage = `${bpResult.error.kind}: ${bpResult.error.message}`;
@@ -32,8 +40,32 @@
     if (wishResult.status === "ok")
       for (const w of wishResult.data)
         (w.intent === "recipe" ? wishRecipe : wishItem).add(w.blueprint_guid);
+    if (missionResult.status === "ok") grantedBy = missionResult.data;
     loading = false;
   });
+
+  /** Missions that grant any of a craftable's interchangeable BPs, deduped by
+   *  mission and sorted by title — the ⚐ fulfilment answer. */
+  function grantingMissions(c: Craftable): MissionRef[] {
+    const seen = new Set<string>();
+    const out: MissionRef[] = [];
+    for (const g of c.bpGuids)
+      for (const m of grantedBy[g] ?? []) {
+        if (seen.has(m.mission_id)) continue;
+        seen.add(m.mission_id);
+        out.push(m);
+      }
+    out.sort((a, b) =>
+      (a.title ?? a.mission_id).localeCompare(b.title ?? b.mission_id),
+    );
+    return out;
+  }
+
+  /** Compact label for the fulfilment chip; full list goes in the tooltip. */
+  function grantLabel(ms: MissionRef[]): string {
+    if (ms.length === 1) return `granted by ${ms[0].title ?? ms[0].mission_id}`;
+    return `granted by ${ms.length} missions`;
+  }
 
   function wishSet(intent: WishIntent): SvelteSet<string> {
     return intent === "recipe" ? wishRecipe : wishItem;
@@ -119,12 +151,27 @@
       {:else}
         <ul>
           {#each wantedBp as c (c.entityKey)}
+            {@const ms = grantingMissions(c)}
             <li class="wl-row">
               <span class="wl-name">{nameOf(c.rep)}</span>
               <span class="wl-cat">{categoryLabel(c.rep)}</span>
-              <span class="fulfil soon" title="The Missions view will list which missions grant this blueprint">
-                which missions grant this · soon
-              </span>
+              {#if ms.length > 0}
+                <span
+                  class="fulfil granted"
+                  title={ms
+                    .map((m) => (m.title ?? m.mission_id) + (m.once_only ? " (once)" : ""))
+                    .join("\n")}
+                >
+                  {grantLabel(ms)}
+                </span>
+              {:else}
+                <span
+                  class="fulfil none"
+                  title="No mission in the current SC data grants this blueprint — it may be default-unlocked or acquired another way"
+                >
+                  no known mission source
+                </span>
+              {/if}
               <button
                 class="wl-remove"
                 title="Remove from wishlist"
@@ -306,6 +353,17 @@
   .fulfil.ready {
     color: var(--ember);
     border-color: var(--ember-dim);
+  }
+  /* ⚐ fulfilment is live: a real mission source exists for this BP. */
+  .fulfil.granted {
+    color: var(--ember);
+    border-color: var(--ember-dim);
+    cursor: help;
+  }
+  /* No mission grants it (default-unlocked, or acquired some other way). */
+  .fulfil.none {
+    font-style: italic;
+    color: var(--faint);
   }
   .wl-remove {
     flex: 0 0 auto;
