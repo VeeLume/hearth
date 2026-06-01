@@ -863,37 +863,58 @@ fn normalize_bp_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// True for a leading size/grade code token the in-game blueprint label
-/// carries but the catalog display name omits — ship-weapon sizes (`S3`) and
-/// manufacturer-grade codes (`IND2B`, `MIL2B`, `STL1C`). Heuristic: short,
-/// all uppercase-ASCII/digits, with at least one of each.
-fn looks_like_grade_code(token: &str) -> bool {
-    !token.is_empty()
-        && token.len() <= 6
-        && token.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        && token.chars().any(|c| c.is_ascii_digit())
-        && token.chars().any(|c| c.is_ascii_uppercase())
-}
-
-/// Resolve a received-blueprint display name (from `Game.log`) to its
-/// catalog `blueprint_record_guid`s. Tries an exact normalized match, then
-/// retries with a leading grade-code token stripped — the log labels ship
-/// weapons / components `"S3 Attrition-3 Repeater"` / `"IND2B Citadel"` while
-/// the catalog stores `"Attrition-3 Repeater"` / `"Citadel"`. Verified to take
-/// a real 901-backup scan from 44/65 to 65/65 resolved.
+/// Resolve a received-blueprint display name (from `Game.log`) to its catalog
+/// `blueprint_record_guid`s.
+///
+/// The log carries the in-game UI string, which is **sc-langpatch's patched
+/// name** when installed: its `weapon_enhancer` / `component_grades` modules
+/// *add* tokens (a ship-weapon size `"S3 …"`, a manufacturer-grade code
+/// `"IND2B …"`), while Hearth's catalog has the vanilla p4k name. Because
+/// those edits only *add* whole tokens, the vanilla name is a contiguous
+/// whole-word run inside the log name.
+///
+/// Strategy: exact normalized match first (covers vanilla sessions — the 901
+/// backups span pre- and post-sc-langpatch states); then the **longest
+/// contiguous whole-word run** of the log name that is itself a catalog name.
+/// Whole-word alignment avoids `"Bolt"` matching inside `"Deadbolt"`; longest
+/// wins so the most specific name is picked; an ambiguous tie resolves to
+/// nothing rather than guess. Verified to take a real 901-backup scan to
+/// 65/65 resolved.
 fn resolve_blueprint_guids<'a>(
     index: &'a HashMap<String, Vec<String>>,
     name: &str,
 ) -> Option<&'a Vec<String>> {
-    if let Some(guids) = index.get(&normalize_bp_name(name)) {
+    let norm = normalize_bp_name(name);
+    if let Some(guids) = index.get(&norm) {
         return Some(guids);
     }
-    if let Some((first, rest)) = name.trim().split_once(' ')
-        && looks_like_grade_code(first)
-    {
-        return index.get(&normalize_bp_name(rest));
+    let words: Vec<&str> = norm.split_whitespace().collect();
+    let mut best: Option<(usize, &'a Vec<String>)> = None;
+    let mut ambiguous = false;
+    for start in 0..words.len() {
+        // Longest run from this start first; the full-length run equals `norm`
+        // which already missed, so sub-runs are what we test.
+        for end in (start + 1..=words.len()).rev() {
+            let candidate = words[start..end].join(" ");
+            let Some(guids) = index.get(&candidate) else { continue };
+            let len = end - start;
+            match best {
+                Some((best_len, _)) if len > best_len => {
+                    best = Some((len, guids));
+                    ambiguous = false;
+                }
+                Some((best_len, best_guids)) if len == best_len && !std::ptr::eq(best_guids, guids) => {
+                    ambiguous = true;
+                }
+                None => best = Some((len, guids)),
+                _ => {}
+            }
+        }
     }
-    None
+    if ambiguous {
+        return None;
+    }
+    best.map(|(_, guids)| guids)
 }
 
 /// v1.5 auto-sensing: tail the active install's `Game.log`, and when the
@@ -1063,32 +1084,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grade_code_detection() {
-        assert!(looks_like_grade_code("S3")); // ship-weapon size
-        assert!(looks_like_grade_code("IND2B")); // manufacturer-grade
-        assert!(looks_like_grade_code("STL1C"));
-        assert!(!looks_like_grade_code("Aril")); // no digit
-        assert!(!looks_like_grade_code("P4-AR")); // hyphen
-        assert!(!looks_like_grade_code("Attrition-3")); // lowercase + hyphen
-        assert!(!looks_like_grade_code(""));
-    }
-
-    #[test]
-    fn resolves_exact_then_grade_prefix_stripped() {
+    fn resolves_exact_and_additive_langpatch_edits() {
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
         index.insert("aril arms".into(), vec!["g-aril".into()]);
         index.insert("attrition-3 repeater".into(), vec!["g-attr".into()]);
         index.insert("citadel".into(), vec!["g-cit".into()]);
+        index.insert("deadbolt iii cannon".into(), vec!["g-dead".into()]);
+        index.insert("bolt".into(), vec!["g-bolt".into()]);
 
-        // Exact (FPS gear — no prefix in the log).
+        // Exact (FPS gear — sc-langpatch doesn't prefix these).
         assert_eq!(resolve_blueprint_guids(&index, "Aril Arms"), Some(&vec!["g-aril".to_string()]));
-        // Ship-weapon size prefix the catalog omits.
+        // Added ship-weapon size token → longest whole-word run matches.
         assert_eq!(
             resolve_blueprint_guids(&index, "S3 Attrition-3 Repeater"),
             Some(&vec!["g-attr".to_string()])
         );
-        // Manufacturer-grade prefix.
+        // Added manufacturer-grade token.
         assert_eq!(resolve_blueprint_guids(&index, "IND2B Citadel"), Some(&vec!["g-cit".to_string()]));
+        // Whole-word alignment: "Bolt" must NOT match inside "Deadbolt".
+        assert_eq!(
+            resolve_blueprint_guids(&index, "S3 Deadbolt III Cannon"),
+            Some(&vec!["g-dead".to_string()])
+        );
         // Genuine miss.
         assert!(resolve_blueprint_guids(&index, "Totally Unknown").is_none());
     }
