@@ -14,14 +14,16 @@
 // success.
 
 import { SvelteSet } from "svelte/reactivity";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   commands,
+  errText,
+  onOwnershipChanged,
+  type UnlistenFn,
   type BpView,
   type MissionView,
   type MissionRef,
   type WishIntent,
-} from "$lib/bindings";
+} from "$lib/ipc";
 
 // Ownership sets — shared so a toggle on any page updates them everywhere.
 export const owned = new SvelteSet<string>();
@@ -81,7 +83,7 @@ export function ensureBlueprints(): Promise<string | null> {
         return null;
       }
       bpPromise = null; // allow a retry on a later visit
-      return `${r.error.kind}: ${r.error.message}`;
+      return errText(r.error);
     })();
   }
   return bpPromise;
@@ -98,7 +100,7 @@ export function ensureMissions(): Promise<string | null> {
         return null;
       }
       mPromise = null;
-      return `${r.error.kind}: ${r.error.message}`;
+      return errText(r.error);
     })();
   }
   return mPromise;
@@ -115,7 +117,7 @@ export function ensureGrantedBy(): Promise<string | null> {
         return null;
       }
       gbPromise = null;
-      return `${r.error.kind}: ${r.error.message}`;
+      return errText(r.error);
     })();
   }
   return gbPromise;
@@ -144,7 +146,7 @@ export function ensureOwnership(): Promise<string | null> {
       }
       ownPromise = null;
       const err = o.status === "error" ? o.error : w.status === "error" ? w.error : null;
-      return err ? `${err.kind}: ${err.message}` : "failed to load ownership";
+      return err ? errText(err) : "failed to load ownership";
     })();
   }
   return ownPromise;
@@ -161,7 +163,5 @@ export async function refreshOwnership() {
  *  sensor auto-mark) and refresh the shared owned set so the catalog count
  *  stays current without a restart. Call once, in the root layout. */
 export function listenForOwnershipChanges(): Promise<UnlistenFn> {
-  return listen("ownership-changed", () => {
-    refreshOwnership();
-  });
+  return onOwnershipChanged(refreshOwnership);
 }

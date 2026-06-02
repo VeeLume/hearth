@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { commands, type AccountWithAliases, type AppSettings } from "$lib/bindings";
+  import { commands, errText, type AccountWithAliases, type AppSettings } from "$lib/ipc";
   import Loading from "$lib/Loading.svelte";
 
   // Reusable accounts manager — rendered in Settings → Account, and (later) in
@@ -36,7 +36,7 @@
       commands.getSettings(),
     ]);
     if (res.status === "ok") accounts = res.data;
-    else error = `${res.error.kind}: ${res.error.message}`;
+    else error = errText(res.error);
     if (set.status === "ok") settings = set.data;
     loading = false;
   }
@@ -46,7 +46,7 @@
     togglingOnline = true;
     const res = await commands.setOnline(enabled);
     if (res.status === "ok") settings = res.data;
-    else error = `${res.error.kind}: ${res.error.message}`;
+    else error = errText(res.error);
     togglingOnline = false;
   }
 
@@ -62,7 +62,7 @@
         a.account.id === accountId ? { ...a, account: res.data } : a,
       );
     } else {
-      error = `${res.error.kind}: ${res.error.message}`;
+      error = errText(res.error);
     }
     verifyingId = null;
   }
@@ -81,7 +81,7 @@
       mergeFrom = "";
       mergeInto = "";
     } else {
-      error = `${res.error.kind}: ${res.error.message}`;
+      error = errText(res.error);
     }
     merging = false;
   }
@@ -94,7 +94,7 @@
       accounts = res.data;
       formerDraft[accountId] = "";
     } else {
-      error = `${res.error.kind}: ${res.error.message}`;
+      error = errText(res.error);
     }
   }
 

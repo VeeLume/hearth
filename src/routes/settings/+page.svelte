@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { commands, type AppSettings } from "$lib/bindings";
+  import { commands, errText, type AppSettings } from "$lib/ipc";
   import AccountManager from "$lib/AccountManager.svelte";
   import BlueprintImport from "$lib/BlueprintImport.svelte";
   import { openOnboarding } from "$lib/onboardingStore.svelte";
@@ -80,7 +80,7 @@
       wiping = false;
       lastResult = {
         kind: "err",
-        text: `${result.error.kind}: ${result.error.message}`,
+        text: errText(result.error),
       };
     }
   }

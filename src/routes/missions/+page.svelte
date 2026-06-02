@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, type MissionView } from "$lib/bindings";
+  import { commands, errText, type MissionView } from "$lib/ipc";
   import Loading from "$lib/Loading.svelte";
   import { data, owned, ensureMissions, ensureOwnership } from "$lib/data.svelte";
 
@@ -85,7 +85,7 @@
     } else {
       if (was) owned.add(guid);
       else owned.delete(guid);
-      errorMessage = `${res.error.kind}: ${res.error.message}`;
+      errorMessage = errText(res.error);
     }
   }
 

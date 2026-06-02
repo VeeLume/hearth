@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { commands, type ActiveScope, type AppSettings } from "$lib/bindings";
+  import { commands, errText, type ActiveScope, type AppSettings } from "$lib/ipc";
   import { finishOnboarding } from "$lib/onboardingStore.svelte";
   import { bpImport, runImport } from "$lib/importStore.svelte";
 
@@ -19,7 +19,7 @@
   onMount(async () => {
     const [s, set] = await Promise.all([commands.activeScope(), commands.getSettings()]);
     if (s.status === "ok") scope = s.data;
-    else scopeError = `${s.error.kind}: ${s.error.message}`;
+    else scopeError = errText(s.error);
     if (set.status === "ok") settings = set.data;
   });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, type BpView, type WishIntent } from "$lib/bindings";
+  import { commands, errText, type BpView, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/categories";
   import Loading from "$lib/Loading.svelte";
   import {
@@ -211,7 +211,7 @@
       // Revert.
       if (wasOwned) owned.add(guid);
       else owned.delete(guid);
-      errorMessage = `${result.error.kind}: ${result.error.message}`;
+      errorMessage = errText(result.error);
     }
   }
 
@@ -229,7 +229,7 @@
     } else {
       if (wasWanted) set.add(guid);
       else set.delete(guid);
-      errorMessage = `${result.error.kind}: ${result.error.message}`;
+      errorMessage = errText(result.error);
     }
   }
 

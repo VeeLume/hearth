@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { page } from "$app/state";
-  import { commands, type ActiveScope } from "$lib/bindings";
+  import {
+    commands,
+    errText,
+    onActiveScopeChanged,
+    type ActiveScope,
+    type UnlistenFn,
+  } from "$lib/ipc";
   import { primaryNav, futureNav } from "$lib/nav";
   import Toasts from "$lib/Toasts.svelte";
   import NotificationCenter from "$lib/NotificationCenter.svelte";
@@ -43,7 +48,7 @@
       scope = result.data;
       scopeError = null;
     } else {
-      scopeError = `${result.error.kind}: ${result.error.message}`;
+      scopeError = errText(result.error);
     }
   }
 
@@ -63,7 +68,7 @@
     // Re-read the active scope when it changes behind our back — e.g. the
     // startup rename check auto-applied a handle rename, swapping which account
     // row is active.
-    unlistenScope = await listen("active-scope-changed", loadScope);
+    unlistenScope = await onActiveScopeChanged(loadScope);
 
     // Warm the shared data store in the background (one backend load serves
     // all of these) so every page renders instantly when reached — no

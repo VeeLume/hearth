@@ -3,10 +3,11 @@
   import { SvelteSet } from "svelte/reactivity";
   import {
     commands,
+    errText,
     type BpView,
     type MissionRef,
     type WishIntent,
-  } from "$lib/bindings";
+  } from "$lib/ipc";
   import { categoryFor } from "$lib/categories";
   import Loading from "$lib/Loading.svelte";
   import {
@@ -114,7 +115,7 @@
     } else {
       if (was) set.add(guid);
       else set.delete(guid);
-      errorMessage = `${res.error.kind}: ${res.error.message}`;
+      errorMessage = errText(res.error);
     }
   }
 

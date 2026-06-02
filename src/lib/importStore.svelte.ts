@@ -8,7 +8,7 @@
 // and finishes in the background. Corrections to a mis-mapped identity are made
 // in Settings → Account (delete/merge — the import is idempotent).
 
-import { commands, type ImportChoice, type ImportResult } from "$lib/bindings";
+import { commands, errText, type ImportChoice, type ImportResult } from "$lib/ipc";
 import { refreshOwnership } from "$lib/data.svelte";
 import { notify } from "$lib/notifications.svelte";
 
@@ -42,7 +42,7 @@ export async function runImport(opts: { quiet?: boolean; createNew?: boolean } =
   try {
     const scanRes = await commands.scanLogHistory();
     if (scanRes.status !== "ok") {
-      _error = `${scanRes.error.kind}: ${scanRes.error.message}`;
+      _error = errText(scanRes.error);
       notify({ level: "error", title: "Log import failed", body: _error });
       return;
     }
@@ -89,7 +89,7 @@ export async function runImport(opts: { quiet?: boolean; createNew?: boolean } =
         });
       }
     } else {
-      _error = `${res.error.kind}: ${res.error.message}`;
+      _error = errText(res.error);
       notify({ level: "error", title: "Log import failed", body: _error });
     }
   } finally {
