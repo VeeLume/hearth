@@ -37,6 +37,7 @@ use tokio::sync::OnceCell;
 pub mod error;
 pub mod export;
 pub mod identity;
+pub mod notify;
 pub mod sc_loader;
 pub mod sensors;
 
@@ -878,6 +879,22 @@ fn normalize_bp_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// `""` for one, `"s"` for many — for pluralising notification copy.
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// A short, comma-joined preview of names for a notification body: the first
+/// four, then `+N more`.
+fn preview_names(names: &[String]) -> String {
+    let shown: Vec<&str> = names.iter().take(4).map(String::as_str).collect();
+    let mut s = shown.join(", ");
+    if names.len() > 4 {
+        s.push_str(&format!(", +{} more", names.len() - 4));
+    }
+    s
+}
+
 /// Resolve a received-blueprint display name (from `Game.log`) to its catalog
 /// `blueprint_record_guid`s.
 ///
@@ -1063,6 +1080,37 @@ fn spawn_sensor(handle: tauri::AppHandle) {
                 unresolved = unresolved.len(),
                 "Game.log sensing pass"
             );
+
+            // Human-facing notification through the global funnel. Built from
+            // refs before the move below; the `blueprints-sensed` event stays
+            // as a (currently reserved) per-page data-refresh signal.
+            if !newly_owned.is_empty() {
+                let count = newly_owned.len();
+                let mut body = preview_names(&marked);
+                if !unresolved.is_empty() {
+                    body = format!("{body} · {} not recognised", unresolved.len());
+                }
+                notify::notify(
+                    &handle,
+                    notify::Notification::success(format!(
+                        "Marked {count} blueprint{} owned",
+                        plural(count)
+                    ))
+                    .with_body(body)
+                    .with_action("View catalog", "/"),
+                );
+            } else if !unresolved.is_empty() {
+                let count = unresolved.len();
+                notify::notify(
+                    &handle,
+                    notify::Notification::warning(format!(
+                        "{count} sensed blueprint{} not recognised",
+                        plural(count)
+                    ))
+                    .with_body(preview_names(&unresolved)),
+                );
+            }
+
             if let Err(e) = handle.emit(
                 "blueprints-sensed",
                 BlueprintsSensed { marked, newly_owned, unresolved },

@@ -260,7 +260,6 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         write!(
             f,
-            "{}",
             "<2026-05-30T15:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo Bar: \" [62] to queue. MissionId: [x] [Team]\n<2026-05-30T15:00:01.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Partial"
         )
         .unwrap();
@@ -274,7 +273,7 @@ mod tests {
         );
 
         // Complete the partial line.
-        write!(f, "{}", " Two: \" [63] to queue. MissionId: [x] [Team]\n").unwrap();
+        writeln!(f, " Two: \" [63] to queue. MissionId: [x] [Team]").unwrap();
         f.flush().unwrap();
         let third = tailer.poll().unwrap();
         assert_eq!(

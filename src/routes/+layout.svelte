@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { type UnlistenFn } from "@tauri-apps/api/event";
   import { page } from "$app/state";
   import { commands, type ActiveScope } from "$lib/bindings";
   import { primaryNav, futureNav } from "$lib/nav";
+  import Toasts from "$lib/Toasts.svelte";
+  import NotificationCenter from "$lib/NotificationCenter.svelte";
+  import { notifications, listenForNotifications, markAllRead } from "$lib/notifications.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -13,38 +16,24 @@
   let verifying = $state(false);
   let verifyMessage = $state<string | null>(null);
 
-  // ── Game.log auto-sensing toast (v1.5) ──────────────────────────────
-  // The backend emits `blueprints-sensed` after a poll that auto-marked
-  // blueprints owned. Surface it briefly so nothing changes silently.
-  type BlueprintsSensed = {
-    marked: string[];
-    newly_owned: string[];
-    unresolved: string[];
-  };
-  let sensed = $state<BlueprintsSensed | null>(null);
-  let sensedTimer: ReturnType<typeof setTimeout> | undefined;
+  // Notification center (sidebar bell). Opening it marks everything read so
+  // the bell badge clears; the per-session log stays in the panel.
+  let centerOpen = $state(false);
   let unlisten: UnlistenFn | undefined;
 
-  function dismissSensed() {
-    sensed = null;
-    clearTimeout(sensedTimer);
+  function toggleCenter() {
+    centerOpen = !centerOpen;
+    if (centerOpen) markAllRead();
   }
 
   onDestroy(() => {
     unlisten?.();
-    clearTimeout(sensedTimer);
   });
 
   onMount(async () => {
-    // Auto-sensing toast: only surface passes that actually changed
-    // something (newly-owned) or hit an unrecognised name worth flagging.
-    unlisten = await listen<BlueprintsSensed>("blueprints-sensed", (event) => {
-      const p = event.payload;
-      if (p.newly_owned.length === 0 && p.unresolved.length === 0) return;
-      sensed = p;
-      clearTimeout(sensedTimer);
-      sensedTimer = setTimeout(() => (sensed = null), 8000);
-    });
+    // The single funnel: every backend `notify` event lands in the store,
+    // which drives both the toast stack and the notification center.
+    unlisten = await listenForNotifications();
 
     // Remove the pre-hydration splash from app.html now that Svelte
     // is in control. Fades out via the .hidden class for ~200ms.
@@ -89,6 +78,30 @@
     <div class="brand">
       <span class="flame">🔥</span>
       <span class="brand-name">Hearth</span>
+      <button
+        class="bell"
+        class:open={centerOpen}
+        onclick={toggleCenter}
+        title="Notifications"
+        aria-label="Notifications"
+      >
+        <svg
+          class="bell-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        </svg>
+        {#if notifications.unread > 0}
+          <span class="bell-badge">{notifications.unread > 9 ? "9+" : notifications.unread}</span>
+        {/if}
+      </button>
     </div>
 
     <nav>
@@ -156,27 +169,8 @@
   </main>
 </div>
 
-{#if sensed}
-  <div class="toast" role="status">
-    <span class="toast-flame">🔥</span>
-    <div class="toast-body">
-      {#if sensed.newly_owned.length > 0}
-        <span class="toast-title">
-          Marked {sensed.newly_owned.length} blueprint{sensed.newly_owned.length === 1 ? "" : "s"} owned
-        </span>
-        <span class="toast-detail">{sensed.marked.slice(0, 4).join(", ")}{sensed.marked.length > 4 ? `, +${sensed.marked.length - 4} more` : ""}</span>
-      {:else}
-        <span class="toast-title">Detected blueprints from the game</span>
-      {/if}
-      {#if sensed.unresolved.length > 0}
-        <span class="toast-detail muted" title={sensed.unresolved.join("\n")}>
-          {sensed.unresolved.length} not recognised in the catalog
-        </span>
-      {/if}
-    </div>
-    <button class="toast-close" onclick={dismissSensed} aria-label="Dismiss">×</button>
-  </div>
-{/if}
+<NotificationCenter open={centerOpen} onClose={() => (centerOpen = false)} />
+<Toasts />
 
 <style>
   .app {
@@ -380,64 +374,49 @@
     overflow: hidden;
   }
 
-  /* Auto-sensing toast — bottom-right, fades in, auto-dismisses. */
-  .toast {
-    position: fixed;
-    bottom: 1.1rem;
-    right: 1.1rem;
-    z-index: 50;
-    display: flex;
-    align-items: flex-start;
-    gap: 0.65rem;
-    max-width: 340px;
-    padding: 0.7rem 0.8rem;
-    background: var(--panel-2);
-    border: 1px solid var(--ember-dim);
-    border-radius: 10px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
-    animation: toast-in 160ms ease-out;
-  }
-  @keyframes toast-in {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .toast-flame {
-    font-size: 1.1rem;
-    line-height: 1.2;
-  }
-  .toast-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 0;
-  }
-  .toast-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--ember);
-  }
-  .toast-detail {
-    font-size: 0.74rem;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .toast-detail.muted {
-    color: var(--faint);
-    cursor: help;
-  }
-  .toast-close {
+  /* Notification bell — right of the brand, badge shows unread count. */
+  /* Matches the catalog's ⚐/♡ wish toggles: faint outline glyph, muted on
+     hover, ember when the center is open. Deliberately low-key — the unread
+     badge carries the emphasis, not the bell. */
+  .bell {
+    position: relative;
     margin-left: auto;
     flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    padding: 0.25rem 0.3rem;
     background: transparent;
     border: none;
-    color: var(--faint);
     cursor: pointer;
-    font-size: 1.1rem;
-    line-height: 1;
-    padding: 0 0.2rem;
+    color: var(--faint);
+    transition: color 90ms, transform 90ms;
   }
-  .toast-close:hover {
-    color: var(--text);
+  .bell-icon {
+    display: block;
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+  .bell:hover {
+    color: var(--muted);
+    transform: scale(1.12);
+  }
+  .bell.open {
+    color: var(--ember);
+  }
+  .bell-badge {
+    position: absolute;
+    top: -0.1rem;
+    right: -0.1rem;
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 0.2rem;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--ember);
+    color: #1a1209;
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1;
   }
 </style>
