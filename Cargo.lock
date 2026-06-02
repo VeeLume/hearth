@@ -3878,7 +3878,8 @@ dependencies = [
 
 [[package]]
 name = "sc-dossier"
-version = "0.1.0"
+version = "0.1.1"
+source = "git+https://github.com/VeeLume/sc-dossier.git?tag=v0.1.1#27e7bec2017ebd35ae7471b1714fdb096fcd7e3d"
 dependencies = [
  "aes",
  "cbc",

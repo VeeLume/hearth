@@ -45,6 +45,8 @@ tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 # are pulled transitively by missions/crafting, but listed for clarity.)
 sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.10.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "tags"] }
 
+sc-dossier ={ git = "https://github.com/VeeLume/sc-dossier.git", tag = "v0.1.1"}
+
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }
 hearth-export = { path = "crates/hearth-export" }

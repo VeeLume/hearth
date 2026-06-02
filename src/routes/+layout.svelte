@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { type UnlistenFn } from "@tauri-apps/api/event";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { page } from "$app/state";
   import { commands, type ActiveScope } from "$lib/bindings";
   import { primaryNav, futureNav } from "$lib/nav";
@@ -29,15 +29,27 @@
   let centerOpen = $state(false);
   let unlisten: UnlistenFn | undefined;
   let unlistenOwnership: UnlistenFn | undefined;
+  let unlistenScope: UnlistenFn | undefined;
 
   function toggleCenter() {
     centerOpen = !centerOpen;
     if (centerOpen) markAllRead();
   }
 
+  async function loadScope() {
+    const result = await commands.activeScope();
+    if (result.status === "ok") {
+      scope = result.data;
+      scopeError = null;
+    } else {
+      scopeError = `${result.error.kind}: ${result.error.message}`;
+    }
+  }
+
   onDestroy(() => {
     unlisten?.();
     unlistenOwnership?.();
+    unlistenScope?.();
   });
 
   onMount(async () => {
@@ -47,6 +59,10 @@
     // Refresh the shared owned set whenever the backend changes it behind our
     // back (live sync reconcile, sensor auto-mark).
     unlistenOwnership = await listenForOwnershipChanges();
+    // Re-read the active scope when it changes behind our back — e.g. the
+    // startup rename check auto-applied a handle rename, swapping which account
+    // row is active.
+    unlistenScope = await listen("active-scope-changed", loadScope);
 
     // Warm the shared data store in the background (one backend load serves
     // all of these) so every page renders instantly when reached — no
@@ -74,12 +90,7 @@
     // active_scope now hits only discovery + db (no DCB parse) so this
     // returns in ~50ms even on a cold start, populating the sidebar
     // independently of the catalog page's own onMount.
-    const result = await commands.activeScope();
-    if (result.status === "ok") {
-      scope = result.data;
-    } else {
-      scopeError = `${result.error.kind}: ${result.error.message}`;
-    }
+    await loadScope();
   });
 
 

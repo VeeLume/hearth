@@ -20,6 +20,12 @@ path = "src/bin/export_bindings.rs"
 name = "hearth_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Probe example talks to CIG's backend via sc-dossier — only buildable with the
+# live-sync feature (otherwise `--no-default-features --all-targets` fails on it).
+[[example]]
+name = "probe_owned"
+required-features = ["live-sync"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -55,11 +61,7 @@ hearth-export.workspace = true
 # parsing + the items/missions/crafting indices, all via the umbrella.
 sc-holotable.workspace = true
 
-# Live account-data fetch (sc-dossier) behind the `live-sync` feature. Default-on
-# so every build ships it; gated at runtime by a Settings toggle + one-time
-# consent (it talks to CIG's backend — ToS-grey). Path dep for now; switch to a
-# git tag before release.
-sc-dossier = { path = "../../sc-dossier", optional = true }
+sc-dossier = { workspace = true, optional = true}
 
 [features]
 default = ["live-sync"]

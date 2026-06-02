@@ -327,6 +327,62 @@ pub async fn merge_accounts(pool: &DbPool, from: RecordId, into: RecordId) -> Re
     Ok(())
 }
 
+/// Apply a confirmed handle rename: make `new_handle` the account's current
+/// handle and demote the old one to a recorded former handle. If a separate
+/// account row already carries `new_handle` (the eager bootstrap created one
+/// from the launcher handle before the rename was detected), it's absorbed into
+/// `account_id` first — so its data isn't lost and the `UNIQUE(handle)`
+/// constraint stays satisfied. No-op when `new_handle` is already current.
+///
+/// Caller's job to confirm it really is the same account (the rename check does
+/// this via the immutable citizen-record anchor); this is the storage mechanics.
+pub async fn apply_rename(pool: &DbPool, account_id: RecordId, new_handle: &str) -> Result<()> {
+    // Absorb a duplicate row that already grabbed the new handle — or
+    // short-circuit if this account already holds it.
+    if let Some(existing) = get_account_by_handle(pool, new_handle).await? {
+        if existing.id == account_id {
+            return Ok(());
+        }
+        merge_accounts(pool, existing.id, account_id).await?;
+    }
+
+    let old = get_account(pool, account_id)
+        .await?
+        .with_context(|| format!("apply_rename: account {account_id} not found"))?;
+    if old.handle == new_handle {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await.context("beginning rename transaction")?;
+    // Promote new_handle to current.
+    sqlx::query("UPDATE accounts SET handle = ? WHERE id = ?")
+        .bind(new_handle)
+        .bind(account_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .context("updating account handle")?;
+    // Demote the old handle to a former handle.
+    sqlx::query(
+        "INSERT INTO account_aliases (handle, account_id, added_at) VALUES (?, ?, ?) \
+         ON CONFLICT(handle) DO UPDATE SET account_id = excluded.account_id, added_at = excluded.added_at",
+    )
+    .bind(&old.handle)
+    .bind(account_id.to_string())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&mut *tx)
+    .await
+    .context("recording former handle")?;
+    // new_handle is now the current handle — it must not also sit in the alias
+    // table (the merge above may have parked it there).
+    sqlx::query("DELETE FROM account_aliases WHERE handle = ?")
+        .bind(new_handle)
+        .execute(&mut *tx)
+        .await
+        .context("clearing self-alias after rename")?;
+    tx.commit().await.context("committing rename")?;
+    Ok(())
+}
+
 type AccountRow = (
     String,         // id
     String,         // handle
@@ -848,5 +904,49 @@ mod tests {
         );
         assert_eq!(account_id_for_handle(&pool, "OldName").await.unwrap(), Some(into.id));
         assert_eq!(upsert_account_by_handle(&pool, "OldName").await.unwrap().id, into.id);
+    }
+
+    #[tokio::test]
+    async fn apply_rename_swaps_handle_and_absorbs_dupe() {
+        // Established account under the old handle, with data + anchor, plus an
+        // empty row the eager bootstrap created under the new handle.
+        let pool = open_in_memory().await.unwrap();
+        let x = account(&pool, "OldName").await;
+        update_account_anchors(&pool, x.id, 4242, "2016-01-31").await.unwrap();
+        add_owned(&pool, scope(&x, Platform::Prod), "bp-x").await.unwrap();
+        let dupe = account(&pool, "NewName").await;
+        assert_ne!(dupe.id, x.id);
+
+        apply_rename(&pool, x.id, "NewName").await.unwrap();
+
+        // One account survives: current handle NewName, OldName demoted, anchor
+        // and data preserved, both handles resolve to it.
+        assert_eq!(list_accounts(&pool).await.unwrap().len(), 1);
+        let survivor = get_account(&pool, x.id).await.unwrap().unwrap();
+        assert_eq!(survivor.handle, "NewName");
+        assert_eq!(survivor.citizen_record, Some(4242));
+        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
+        assert_eq!(account_id_for_handle(&pool, "OldName").await.unwrap(), Some(x.id));
+        assert_eq!(account_id_for_handle(&pool, "NewName").await.unwrap(), Some(x.id));
+        assert_eq!(
+            list_owned(&pool, scope(&survivor, Platform::Prod)).await.unwrap().len(),
+            1
+        );
+
+        // Idempotent — re-applying the current handle changes nothing.
+        apply_rename(&pool, x.id, "NewName").await.unwrap();
+        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
+    }
+
+    #[tokio::test]
+    async fn apply_rename_without_a_dupe() {
+        // No pre-existing row for the new handle — a plain promote/demote.
+        let pool = open_in_memory().await.unwrap();
+        let x = account(&pool, "OldName").await;
+        apply_rename(&pool, x.id, "FreshName").await.unwrap();
+        let survivor = get_account(&pool, x.id).await.unwrap().unwrap();
+        assert_eq!(survivor.handle, "FreshName");
+        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
+        assert_eq!(account_id_for_handle(&pool, "FreshName").await.unwrap(), Some(x.id));
     }
 }

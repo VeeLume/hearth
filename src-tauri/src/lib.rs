@@ -62,6 +62,11 @@ struct AppState {
     /// Cached result of the last `scan_log_history` so `apply_log_import`
     /// doesn't re-read the ~900 backup logs. Cleared after a successful apply.
     import_scan: std::sync::Mutex<Vec<ScannedIdentity>>,
+    /// Resolved active RSI handle, cached once. The launcher store only persists
+    /// the identity when "Remember Me" is checked; this falls back to the live
+    /// `Game.log`, the last-active handle, or a sole known account so the
+    /// account-scoped app still works. See [`AppState::active_handle`].
+    resolved_handle: OnceCell<String>,
 }
 
 impl AppState {
@@ -71,6 +76,7 @@ impl AppState {
             data: OnceCell::new(),
             db: OnceCell::new(),
             import_scan: std::sync::Mutex::new(Vec::new()),
+            resolved_handle: OnceCell::new(),
         }
     }
 
@@ -126,25 +132,75 @@ impl AppState {
             .await
     }
 
-    /// Resolve the currently-active account, bootstrapping a row from
-    /// the launcher store's handle if needed. Returns the live `Account`
-    /// row. Fast — needs only discovery + db, not the catalog.
+    /// The active RSI handle, resolved once and cached. The launcher store only
+    /// persists the identity when the user checked "Remember Me", so a raw
+    /// `discovery().handle` is frequently `None` — which used to break every
+    /// account-scoped command. This falls back through the live `Game.log`, the
+    /// last handle we ran against, and a sole known account before giving up.
     ///
-    /// Bootstrap rule: at first run the launcher store's `nickname` is
-    /// the active account. If no `accounts` row matches, insert one.
-    /// Stage 3+ adds a multi-account picker on top of this.
+    /// Cached in a `OnceCell`: the active account is fixed per session anyway
+    /// (`discovery` itself is cached; switching accounts means a restart), and
+    /// caching keeps the Game.log read off the hot path. A failure isn't cached,
+    /// so a later call (after the game has written its log) can still succeed.
+    async fn active_handle(&self) -> Result<String, AppError> {
+        self.resolved_handle
+            .get_or_try_init(|| self.resolve_handle())
+            .await
+            .cloned()
+    }
+
+    async fn resolve_handle(&self) -> Result<String, AppError> {
+        let d = self.discovery().await?;
+        // 1. Launcher store identity (present only with "Remember Me").
+        if let Some(h) = d.handle.clone() {
+            return Ok(h);
+        }
+        // 2. The live Game.log's logged-in handle — written every session
+        //    regardless of "Remember Me", so it reflects who is actually
+        //    playing right now (or who played last).
+        let log_path = sensors::game_log_path(&d.install.root);
+        if let Some(h) =
+            tokio::task::spawn_blocking(move || read_game_log_handle(&log_path))
+                .await
+                .map_err(|e| AppError::Internal(format!("game-log read join: {e}")))?
+        {
+            tracing::info!(handle = %h, "active handle resolved from Game.log (launcher identity unavailable)");
+            return Ok(h);
+        }
+        // 3. The last handle we ran against, if it still maps to an account.
+        let db = self.db().await?;
+        if let Some(last) = hearth_storage::get_setting(db, LAST_ACTIVE_HANDLE)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?
+            && hearth_storage::account_id_for_handle(db, &last)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?
+                .is_some()
+        {
+            tracing::info!(handle = %last, "active handle resolved from last-active setting");
+            return Ok(last);
+        }
+        // 4. A single known account is unambiguous.
+        let accounts = hearth_storage::list_accounts(db)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        if let [only] = accounts.as_slice() {
+            tracing::info!(handle = %only.handle, "active handle resolved to the sole known account");
+            return Ok(only.handle.clone());
+        }
+        Err(AppError::Internal(
+            "no RSI identity available — check \"Remember Me\" in the RSI launcher, \
+             or sign in and launch the game once so Hearth can read it"
+                .into(),
+        ))
+    }
+
+    /// Resolve the currently-active account, bootstrapping a row from the
+    /// resolved handle if needed. Returns the live `Account` row. Fast — needs
+    /// only discovery + db (+ a one-time Game.log read in the fallback path),
+    /// not the catalog.
     async fn active_account(&self) -> Result<Account, AppError> {
-        let handle = self
-            .discovery()
-            .await?
-            .handle
-            .clone()
-            .ok_or_else(|| {
-                AppError::Internal(
-                    "no RSI handle available — launcher store identity could not be read"
-                        .into(),
-                )
-            })?;
+        let handle = self.active_handle().await?;
         let db = self.db().await?;
         hearth_storage::upsert_account_by_handle(db, &handle)
             .await
@@ -845,6 +901,9 @@ const LIVE_SYNC_ENABLED: &str = "live_sync_enabled";
 const LIVE_SYNC_CONSENTED: &str = "live_sync_consented";
 const SENSOR_ENABLED: &str = "sensor_enabled";
 const ONBOARDING_COMPLETED: &str = "onboarding_completed";
+/// Last launcher handle we ran against — the steady-state guard for the startup
+/// rename check (a network scrape only happens when this changes).
+const LAST_ACTIVE_HANDLE: &str = "last_active_handle";
 
 /// App-global preferences surfaced to the Settings page.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -1360,6 +1419,30 @@ fn emit_ownership_changed(app: &tauri::AppHandle) {
     }
 }
 
+/// Tell the frontend the active account/scope changed (e.g. an auto-applied
+/// rename swapped which account row is active) so the sidebar re-reads it.
+fn emit_scope_changed(app: &tauri::AppHandle) {
+    if let Err(e) = app.emit("active-scope-changed", ()) {
+        tracing::warn!("failed to emit active-scope-changed: {e}");
+    }
+}
+
+/// Scan a `Game.log` for the session's logged-in handle, returning at the first
+/// `User Login Success` line (it sits near the top, so this rarely reads far).
+/// The fallback identity source when the launcher store has no persisted handle
+/// ("Remember Me" unchecked). `None` if the file is missing or has no login line.
+fn read_game_log_handle(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    for bytes in std::io::BufReader::new(file).split(b'\n').map_while(Result::ok) {
+        let line = String::from_utf8_lossy(&bytes);
+        if let Some(sensors::SensedEvent::SessionHandle(h)) = sensors::parse::parse_line(&line) {
+            return Some(h);
+        }
+    }
+    None
+}
+
 /// v1.5 auto-sensing: tail the active install's `Game.log`, and when the
 /// logged session matches the active account + platform (pollution guard),
 /// auto-mark received blueprints owned and emit `blueprints-sensed`.
@@ -1372,27 +1455,27 @@ fn spawn_sensor(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = handle.state::<AppState>();
 
-        // Needs the install (for the log path + the active handle/platform to
-        // guard against) and the catalog (for name → guid resolution).
-        let (log_path, active_platform, active_handle) = match state.discovery().await {
-            Ok(d) => (
-                sensors::game_log_path(&d.install.root),
-                d.platform,
-                d.handle.clone(),
-            ),
+        // Needs the install (for the log path + the active platform to guard
+        // against) and the catalog (for name → guid resolution).
+        let (log_path, active_platform) = match state.discovery().await {
+            Ok(d) => (sensors::game_log_path(&d.install.root), d.platform),
             Err(_) => return, // no install → nothing to sense
         };
         let name_index = match state.catalog().await {
             Ok(catalog) => build_name_index(catalog),
             Err(_) => return,
         };
-        if active_handle.is_none() {
-            // Without the launcher handle we can't pollution-guard (and owned
-            // writes would fail anyway — they need an active account). Don't
-            // tail; the user can still mark BPs manually.
-            tracing::info!("sensor disabled: no launcher handle to guard against");
-            return;
-        }
+        // The active handle to pollution-guard against. Uses the same fallback
+        // chain as the rest of the app (launcher store → Game.log → …), so the
+        // sensor works without "Remember Me" too. No resolvable handle → owned
+        // writes would fail anyway; don't tail (the user can still mark manually).
+        let active_handle = match state.active_handle().await {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::info!("sensor disabled: no active handle to guard against");
+                return;
+            }
+        };
 
         tracing::info!(path = %log_path.display(), "Game.log sensor started");
         let mut tailer = sensors::GameLogTailer::new(log_path);
@@ -1442,8 +1525,8 @@ fn spawn_sensor(handle: tauri::AppHandle) {
                         // the active account, else this log isn't ours to act on.
                         let guard_ok = sensed_platform == Some(active_platform)
                             && matches!(
-                                (&sensed_handle, &active_handle),
-                                (Some(s), Some(a)) if s.eq_ignore_ascii_case(a)
+                                &sensed_handle,
+                                Some(s) if s.eq_ignore_ascii_case(&active_handle)
                             );
                         if !guard_ok {
                             tracing::debug!(
@@ -1544,6 +1627,162 @@ fn spawn_sensor(handle: tauri::AppHandle) {
     });
 }
 
+/// Startup handle-rename detection. The RSI launcher reports the *current*
+/// handle; if it differs from what we ran against last time and isn't already an
+/// established account, the new handle is either a rename of an existing account
+/// or a genuinely separate one. We disambiguate with the one immutable anchor —
+/// the UEE citizen record, scraped from the public profile. A confirmed match
+/// auto-applies the rename (old handle → former) and surfaces a notification;
+/// an inconclusive case is left for manual handling in Settings → Account.
+///
+/// Network is touched only on the changed-handle path — steady-state startups
+/// (same handle as last run) return before any scrape. Best-effort throughout:
+/// any error just means no auto-detection this launch.
+fn spawn_rename_check(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = rename_check(&handle).await {
+            tracing::warn!("rename check skipped: {e:#}");
+        }
+    });
+}
+
+async fn rename_check(app: &tauri::AppHandle) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let db = state.db().await?;
+
+    // First-launch identity capture is onboarding's job; only run afterwards.
+    if !read_bool_setting(db, ONBOARDING_COMPLETED, false).await? {
+        return Ok(());
+    }
+
+    // The active handle — launcher store, or the Game.log / fallback chain when
+    // "Remember Me" is off (so rename detection works without it too). No
+    // resolvable identity → nothing to do.
+    let current_handle = match state.active_handle().await {
+        Ok(h) => h,
+        Err(_) => return Ok(()),
+    };
+
+    // Unchanged since last run → fast path, no scrape.
+    let last = hearth_storage::get_setting(db, LAST_ACTIVE_HANDLE)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    if last.as_deref() == Some(current_handle.as_str()) {
+        return Ok(());
+    }
+
+    // If the launcher handle is already an established (anchored) account, this
+    // is a plain account switch, not a rename.
+    let known = hearth_storage::get_account_by_handle(db, &current_handle)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    if known.as_ref().is_some_and(|a| a.citizen_record.is_some()) {
+        remember_active_handle(db, &current_handle).await;
+        return Ok(());
+    }
+
+    // Candidate rename sources: other accounts carrying an anchor to match.
+    let others: Vec<Account> = hearth_storage::list_accounts(db)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .into_iter()
+        .filter(|a| !a.handle.eq_ignore_ascii_case(&current_handle))
+        .collect();
+    let anchored: Vec<&Account> = others.iter().filter(|a| a.citizen_record.is_some()).collect();
+
+    if anchored.is_empty() {
+        // Nothing to confirm against. If there's exactly one prior account, hint
+        // a possible rename for manual resolution; otherwise stay silent.
+        if others.len() == 1 {
+            notify_possible_rename(app, &others[0].handle, &current_handle);
+        }
+        remember_active_handle(db, &current_handle).await;
+        return Ok(());
+    }
+
+    // Scrape the public profile for the immutable citizen record.
+    let info = match identity::fetch_profile(&current_handle).await {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::info!("rename check: profile fetch failed for {current_handle}: {e}");
+            if others.len() == 1 {
+                notify_possible_rename(app, &others[0].handle, &current_handle);
+            }
+            remember_active_handle(db, &current_handle).await;
+            return Ok(());
+        }
+    };
+
+    match anchored.iter().find(|a| a.citizen_record == Some(info.citizen_record)) {
+        Some(src) => {
+            let (src_id, old_handle) = (src.id, src.handle.clone());
+            hearth_storage::apply_rename(db, src_id, &current_handle)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+            // Refresh anchors + last_verified from the scrape we just did.
+            hearth_storage::update_account_anchors(db, src_id, info.citizen_record, &info.enlisted)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+            tracing::info!(from = %old_handle, to = %current_handle, "auto-applied handle rename");
+            notify::notify(
+                app,
+                notify::Notification::info(format!("Renamed: @{old_handle} → @{current_handle}"))
+                    .with_body(
+                        "Matched by your RSI profile and merged automatically. \
+                         Not you? Manage accounts in Settings.",
+                    )
+                    .with_action("Open settings", "/settings"),
+            );
+            // The active account (and its owned set) changed behind the UI.
+            emit_ownership_changed(app);
+            emit_scope_changed(app);
+        }
+        None => {
+            // Scraped, but no anchor matched — a genuinely separate account.
+            // Capture its anchors (we have them) so a future rename of *this*
+            // one is confident, then leave it as its own account.
+            if let Some(acct) = hearth_storage::get_account_by_handle(db, &current_handle)
+                .await
+                .map_err(|e| AppError::Storage(format!("{e:#}")))?
+            {
+                let _ = hearth_storage::update_account_anchors(
+                    db,
+                    acct.id,
+                    info.citizen_record,
+                    &info.enlisted,
+                )
+                .await;
+            }
+        }
+    }
+
+    remember_active_handle(db, &current_handle).await;
+    Ok(())
+}
+
+/// Persist the launcher handle we just ran against, so the next startup's rename
+/// check short-circuits unless it actually changes. Best-effort.
+async fn remember_active_handle(db: &DbPool, handle: &str) {
+    if let Err(e) = hearth_storage::set_setting(db, LAST_ACTIVE_HANDLE, handle).await {
+        tracing::warn!("could not record last active handle: {e:#}");
+    }
+}
+
+/// Non-blocking nudge when a handle changed but we couldn't anchor-confirm a
+/// rename (no stored anchor, or the profile scrape failed). Points to the
+/// Accounts UI where the user can merge manually.
+fn notify_possible_rename(app: &tauri::AppHandle, old: &str, new: &str) {
+    notify::notify(
+        app,
+        notify::Notification::info(format!("New handle @{new} detected"))
+            .with_body(format!(
+                "If you renamed from @{old}, merge them in Settings so your blueprints \
+                 follow. If this is a different account, you can ignore this."
+            ))
+            .with_action("Open settings", "/settings"),
+    );
+}
+
 /// On startup, if live sync is enabled, fetch + reconcile once after the
 /// catalog is warm. The result surfaces through the notification funnel (the
 /// only feedback channel here — there's no UI caller). Disabled / unreadable
@@ -1625,6 +1864,7 @@ pub fn run() {
         .setup(|app| {
             spawn_warmup(app.handle().clone());
             spawn_sensor(app.handle().clone());
+            spawn_rename_check(app.handle().clone());
             #[cfg(feature = "live-sync")]
             spawn_live_sync(app.handle().clone());
             Ok(())
@@ -1662,5 +1902,28 @@ mod tests {
         );
         // Genuine miss.
         assert!(resolve_blueprint_guids(&index, "Totally Unknown").is_none());
+    }
+
+    #[test]
+    fn reads_handle_from_game_log() {
+        // The "Remember Me" off fallback: pull the session handle straight from
+        // the live Game.log's login line.
+        let path = std::env::temp_dir().join("hearth_resolve_handle_test.log");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(
+            &path,
+            concat!(
+                "<x>    [Cmdline* ] --envtag='PUB'\n",
+                "<x> [Notice] <Legacy login response> [CIG-net] User Login Success - Handle[FallbackUser] - Time[1] [Login]\n",
+                "<x> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo: \" [1] to queue. [Team]\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_game_log_handle(&path).as_deref(), Some("FallbackUser"));
+        let _ = std::fs::remove_file(&path);
+
+        // Missing file → None (not an error).
+        let missing = std::env::temp_dir().join("hearth_nonexistent_handle_xyz.log");
+        assert!(read_game_log_handle(&missing).is_none());
     }
 }
