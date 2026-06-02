@@ -2,9 +2,15 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, errText, type MissionView } from "$lib/ipc";
+  import { type MissionView } from "$lib/ipc";
   import Loading from "$lib/components/Loading.svelte";
-  import { data, owned, ensureMissions, ensureOwnership } from "$lib/state/data.svelte";
+  import {
+    data,
+    owned,
+    ensureMissions,
+    ensureOwnership,
+    toggleOwned as setOwned,
+  } from "$lib/state/data.svelte";
 
   // Missions through the blueprint lens. Hearth is BP-focused, so a mission's
   // tracked value is "can it still give me a blueprint I don't own?". There's
@@ -73,20 +79,11 @@
     return g.length > 0 && !g.every((x) => owned.has(x));
   };
 
-  /** Toggle catalog ownership of a reward blueprint (optimistic). */
+  /** Toggle catalog ownership of a reward blueprint (optimistic, shared store
+   *  action); surface any error inline. */
   async function toggleOwned(guid: string) {
-    const was = owned.has(guid);
-    if (was) owned.delete(guid);
-    else owned.add(guid);
-    const res = await commands.toggleOwned(guid);
-    if (res.status === "ok") {
-      if (res.data) owned.add(guid);
-      else owned.delete(guid);
-    } else {
-      if (was) owned.add(guid);
-      else owned.delete(guid);
-      errorMessage = errText(res.error);
-    }
+    const err = await setOwned(guid);
+    if (err) errorMessage = err;
   }
 
   const outstandingCount = $derived(missions.filter(hasOutstanding).length);

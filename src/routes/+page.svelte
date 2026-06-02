@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { commands, errText, type BpView, type WishIntent } from "$lib/ipc";
+  import { commands, type BpView, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import {
@@ -20,6 +20,8 @@
     wishSet,
     ensureBlueprints,
     ensureOwnership,
+    toggleOwned,
+    toggleWishlist,
   } from "$lib/state/data.svelte";
 
   // Blueprints + ownership live in the shared store ($lib/data.svelte) so they
@@ -192,47 +194,6 @@
     loading = false;
   });
 
-  async function toggleOwned(guid: string) {
-    // Optimistic flip; reconcile from the command's returned truth.
-    const wasOwned = owned.has(guid);
-    if (wasOwned) owned.delete(guid);
-    else owned.add(guid);
-
-    const result = await commands.toggleOwned(guid);
-    if (result.status === "ok") {
-      // Server truth — only adjust if it disagrees with our optimistic flip.
-      if (result.data) {
-        owned.add(guid);
-        // Owning clears want-blueprint server-side (see add_owned); mirror
-        // it locally so the count/filter update without a refetch.
-        wishRecipe.delete(guid);
-      } else owned.delete(guid);
-    } else {
-      // Revert.
-      if (wasOwned) owned.add(guid);
-      else owned.delete(guid);
-      errorMessage = errText(result.error);
-    }
-  }
-
-  /** Optimistic flip of one wishlist intent for one BP record. */
-  async function toggleWishlist(guid: string, intent: WishIntent) {
-    const set = wishSet(intent);
-    const wasWanted = set.has(guid);
-    if (wasWanted) set.delete(guid);
-    else set.add(guid);
-
-    const result = await commands.toggleWishlist(guid, intent);
-    if (result.status === "ok") {
-      if (result.data) set.add(guid);
-      else set.delete(guid);
-    } else {
-      if (wasWanted) set.add(guid);
-      else set.delete(guid);
-      errorMessage = errText(result.error);
-    }
-  }
-
   const ownedCount = $derived(
     blueprints.filter((b) => owned.has(b.blueprint_record_guid)).length,
   );
@@ -343,7 +304,10 @@
     const ownedGuids = c.bpGuids.filter((g) => owned.has(g));
     // Owned → clear all; unowned → mark all.
     const targets = ownedGuids.length > 0 ? ownedGuids : c.bpGuids;
-    for (const g of targets) await toggleOwned(g);
+    for (const g of targets) {
+      const err = await toggleOwned(g);
+      if (err) errorMessage = err;
+    }
   }
 
   /** Owned-variant count for a bundle (craftables, not BPs), reactive on `owned`. */
@@ -367,7 +331,10 @@
     const set = wishSet(intent);
     const wantedGuids = c.bpGuids.filter((g) => set.has(g));
     const targets = wantedGuids.length > 0 ? wantedGuids : c.bpGuids;
-    for (const g of targets) await toggleWishlist(g, intent);
+    for (const g of targets) {
+      const err = await toggleWishlist(g, intent);
+      if (err) errorMessage = err;
+    }
   }
 
   const filters: { id: Filter; label: string; icon?: string }[] = [

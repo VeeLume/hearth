@@ -1,13 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import {
-    commands,
-    errText,
-    type BpView,
-    type MissionRef,
-    type WishIntent,
-  } from "$lib/ipc";
+  import { type BpView, type MissionRef, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import {
@@ -26,6 +20,7 @@
     ensureBlueprints,
     ensureOwnership,
     ensureGrantedBy,
+    toggleWishlist,
   } from "$lib/state/data.svelte";
 
   // The wishlist is fulfilment-focused: the catalog is where you *find* and
@@ -102,27 +97,13 @@
     else expandedRecipes.add(key);
   }
 
-  /** Optimistic flip of one intent for one BP record. */
-  async function toggleWant(guid: string, intent: WishIntent) {
-    const set = wishSet(intent);
-    const was = set.has(guid);
-    if (was) set.delete(guid);
-    else set.add(guid);
-    const res = await commands.toggleWishlist(guid, intent);
-    if (res.status === "ok") {
-      if (res.data) set.add(guid);
-      else set.delete(guid);
-    } else {
-      if (was) set.add(guid);
-      else set.delete(guid);
-      errorMessage = errText(res.error);
-    }
-  }
-
-  /** Remove a craftable from one wishlist intent (clears every BP). */
+  /** Remove a craftable from one wishlist intent (clears every BP), via the
+   *  shared optimistic store action; surface any error inline. */
   async function removeWant(c: Craftable, intent: WishIntent) {
-    for (const g of c.bpGuids.filter((g) => wishSet(intent).has(g)))
-      await toggleWant(g, intent);
+    for (const g of c.bpGuids.filter((g) => wishSet(intent).has(g))) {
+      const err = await toggleWishlist(g, intent);
+      if (err) errorMessage = err;
+    }
   }
 
   const craftables = $derived(collapseCraftables(blueprints));

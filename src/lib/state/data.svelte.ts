@@ -165,3 +165,52 @@ export async function refreshOwnership() {
 export function listenForOwnershipChanges(): Promise<UnlistenFn> {
   return onOwnershipChanged(refreshOwnership);
 }
+
+// ── Mutations ─────────────────────────────────────────────────────────────
+// Optimistic single-record toggles, shared by every page that writes ownership
+// or wishlist state (catalog, missions, wishlist). Each flips the shared set
+// immediately, then reconciles with the backend's returned truth and reverts on
+// error. They resolve to an error string on failure (caller surfaces it) or
+// null on success — the pages used to each carry their own copy of this.
+
+/** Flip ownership of one blueprint record. Marking it owned also clears any
+ *  want-blueprint wish locally, mirroring what `add_owned` does server-side so
+ *  the shared sets stay consistent without a refetch. */
+export async function toggleOwned(guid: string): Promise<string | null> {
+  const wasOwned = owned.has(guid);
+  if (wasOwned) owned.delete(guid);
+  else owned.add(guid);
+
+  const result = await commands.toggleOwned(guid);
+  if (result.status === "ok") {
+    if (result.data) {
+      owned.add(guid);
+      wishRecipe.delete(guid);
+    } else {
+      owned.delete(guid);
+    }
+    return null;
+  }
+  // Revert the optimistic flip.
+  if (wasOwned) owned.add(guid);
+  else owned.delete(guid);
+  return errText(result.error);
+}
+
+/** Flip one wishlist intent for one blueprint record. */
+export async function toggleWishlist(guid: string, intent: WishIntent): Promise<string | null> {
+  const set = wishSet(intent);
+  const wasWanted = set.has(guid);
+  if (wasWanted) set.delete(guid);
+  else set.add(guid);
+
+  const result = await commands.toggleWishlist(guid, intent);
+  if (result.status === "ok") {
+    if (result.data) set.add(guid);
+    else set.delete(guid);
+    return null;
+  }
+  if (wasWanted) set.add(guid);
+  else set.delete(guid);
+  return errText(result.error);
+}
