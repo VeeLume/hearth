@@ -37,6 +37,26 @@ export function variantSuffix(fullName: string, baseName: string): string {
   return fullName;
 }
 
+/** Format a craft time in seconds as a short human string. */
+export function formatCraftTime(seconds: number | null): string {
+  if (seconds == null || seconds <= 0) return "—";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.round(seconds % 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  return `${s}s`;
+}
+
+/** Format an SCU quantity. Most recipe ingredients are << 1 SCU (e.g. 0.02),
+ *  so default to 2 decimals; widen for larger values. */
+export function formatScu(scu: number | null): string {
+  if (scu == null) return "?";
+  if (scu < 1) return scu.toFixed(2);
+  if (scu < 10) return scu.toFixed(1);
+  return scu.toFixed(0);
+}
+
 /** Fold BPs that craft the same entity into one Craftable. */
 export function collapseCraftables(items: BpView[]): Craftable[] {
   const byEntity = new Map<string, BpView[]>();

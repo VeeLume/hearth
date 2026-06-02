@@ -14,9 +14,10 @@ async fn main() {
     let discovery = hearth_lib::sc_loader::discover()
         .await
         .expect("discover SC install");
-    let bps = hearth_lib::sc_loader::build_catalog(discovery.install)
+    let bps = hearth_lib::sc_loader::build_data(discovery.install)
         .await
-        .expect("build SC catalog");
+        .expect("build SC data")
+        .blueprints;
 
     let mut hits = 0;
     for bp in &bps {

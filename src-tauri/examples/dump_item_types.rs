@@ -12,9 +12,10 @@ async fn main() {
     let discovery = hearth_lib::sc_loader::discover()
         .await
         .expect("discover SC install");
-    let bps = hearth_lib::sc_loader::build_catalog(discovery.install)
+    let bps = hearth_lib::sc_loader::build_data(discovery.install)
         .await
-        .expect("build SC catalog");
+        .expect("build SC data")
+        .blueprints;
 
     // (type, subtype) -> (count, sample display names)
     let mut by_type: BTreeMap<(String, String), (usize, Vec<String>)> = BTreeMap::new();

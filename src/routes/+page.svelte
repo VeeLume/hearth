@@ -8,6 +8,8 @@
     nameOf,
     variantSuffix,
     collapseCraftables,
+    formatCraftTime,
+    formatScu,
   } from "$lib/catalog";
 
   let blueprints = $state<BpView[]>([]);
@@ -160,26 +162,6 @@
     }
     out.sort((a, b) => a.sortName.localeCompare(b.sortName));
     return out;
-  }
-
-  /** Format a craft time in seconds as a short human string. */
-  function formatCraftTime(seconds: number | null): string {
-    if (seconds == null || seconds <= 0) return "—";
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.round(seconds % 60);
-    if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
-    if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
-    return `${s}s`;
-  }
-
-  /** Format an SCU quantity. Most recipe ingredients are << 1 SCU
-   *  (e.g. 0.02), so default to 2 decimals; widen for larger values. */
-  function formatScu(scu: number | null): string {
-    if (scu == null) return "?";
-    if (scu < 1) return scu.toFixed(2);
-    if (scu < 10) return scu.toFixed(1);
-    return scu.toFixed(0);
   }
 
   onMount(async () => {
@@ -403,7 +385,7 @@
   <input
     class="search"
     type="search"
-    placeholder="Search name, type, or GUID…"
+    placeholder="Search name or type…"
     bind:value={query}
     disabled={loading}
   />
@@ -411,9 +393,7 @@
 
 {#if loading}
   <p class="status">
-    Loading SC reference data… (first run after install / SC patch parses
-    the Datacore — ~30 s; subsequent launches load the cached catalog in
-    under a second)
+    Loading blueprints… <span class="status-sub">first run after an SC patch parses the game data (~30 s)</span>
   </p>
 {:else if errorMessage}
   <div class="error">
@@ -490,9 +470,6 @@
                         {#if c.bpGuids.length > 1}
                           <span class="dup-tag" title="{c.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{c.bpGuids.length} BPs</span>
                         {/if}
-                        {#if bp.display_name}
-                          <span class="bp-guid">{bp.blueprint_record_guid}</span>
-                        {/if}
                         {#if bp.recipe?.craft_time_seconds}
                           <span class="bp-time" title="Craft time">⏱ {formatCraftTime(bp.recipe.craft_time_seconds)}</span>
                         {/if}
@@ -533,7 +510,7 @@
                               {#each bp.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
                                 <li class="ingredient">
                                   <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
-                                  <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
+                                  <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
                                   {#if ing.min_quality > 0}
                                     <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
                                   {/if}
@@ -593,7 +570,7 @@
                             {#each bundle.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
                               <li class="ingredient">
                                 <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
-                                <span class="ing-name">{ing.resource_name ?? ing.resource_guid}</span>
+                                <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
                                 {#if ing.min_quality > 0}
                                   <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
                                 {/if}
@@ -619,7 +596,6 @@
                               {#if vc.bpGuids.length > 1}
                                 <span class="dup-tag" title="{vc.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{vc.bpGuids.length} BPs</span>
                               {/if}
-                              <span class="bp-guid">{vc.rep.blueprint_record_guid}</span>
                               <div class="wish-group">
                                 {#if !vOwned}
                                   {@const vWantBp = craftableWishes(vc, "recipe")}
@@ -702,6 +678,10 @@
   .error {
     padding: 1rem 1.6rem;
     color: var(--muted);
+  }
+  .status-sub {
+    color: var(--faint);
+    font-size: 0.82rem;
   }
   .error strong {
     color: var(--bad);
@@ -931,12 +911,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .bp-guid {
-    font-family: ui-monospace, "SF Mono", Consolas, monospace;
-    font-size: 0.72rem;
-    color: var(--faint);
-    flex: 0 0 auto;
-  }
   .bp-time {
     flex: 0 0 auto;
     font-size: 0.72rem;
@@ -1084,7 +1058,7 @@
     opacity: 0.97;
   }
   li.bundle-owned {
-    background: linear-gradient(90deg, var(--ember-glow), transparent 40%);
+    background: linear-gradient(90deg, var(--ember-glow), transparent 60%);
   }
 
   /* Per-variant rows inside an expanded bundle. */
@@ -1126,9 +1100,6 @@
   .variant-name.base {
     color: var(--muted);
     font-style: italic;
-  }
-  .variant .bp-guid {
-    flex: 0 0 auto;
   }
   .variant .wish {
     font-size: 0.95rem;

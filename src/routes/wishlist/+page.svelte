@@ -8,14 +8,22 @@
     type WishIntent,
   } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
-  import { type Craftable, nameOf, collapseCraftables } from "$lib/catalog";
+  import {
+    type Craftable,
+    nameOf,
+    collapseCraftables,
+    formatScu,
+    formatCraftTime,
+  } from "$lib/catalog";
 
   // The wishlist is fulfilment-focused: the catalog is where you *find* and
   // flag things; here you see how to *get* them. Two intents, two questions:
   //   - Blueprints wanted (⚐) → which missions grant this BP?  (Stage 6)
-  //   - Items wanted (♡)      → can I craft it, or can someone craft it for me?
-  //                             (self-craft v1.5 · community v2)
-  // The fulfilment rows below are placeholders until those surfaces exist.
+  //   - Items wanted (♡)      → own the BP? show the recipe ("you can craft
+  //                             this"). Else: acquire the BP, or a community
+  //                             member crafts it (v2).
+  // ⚐ and the owned-item recipe are live; the unowned-item community-craft
+  // path is still a placeholder.
 
   let blueprints = $state<BpView[]>([]);
   let owned = new SvelteSet<string>();
@@ -83,6 +91,13 @@
 
   function craftableOwned(c: Craftable): boolean {
     return c.bpGuids.some((g) => owned.has(g));
+  }
+
+  // Owned want-item rows can expand to show the recipe ("you can craft this").
+  let expandedRecipes = new SvelteSet<string>();
+  function toggleRecipe(key: string) {
+    if (expandedRecipes.has(key)) expandedRecipes.delete(key);
+    else expandedRecipes.add(key);
   }
 
   /** Optimistic flip of one intent for one BP record. */
@@ -211,23 +226,52 @@
         <ul>
           {#each wantedItem as c (c.entityKey)}
             {@const isOwned = craftableOwned(c)}
-            <li class="wl-row">
-              <span class="wl-name">{nameOf(c.rep)}</span>
-              <span class="wl-cat">{categoryLabel(c.rep)}</span>
-              {#if isOwned}
-                <span class="fulfil soon ready" title="You own the blueprint; the 'what can I craft' view arrives in v1.5">
-                  ✓ own BP · craft it yourself · soon
-                </span>
-              {:else}
-                <span class="fulfil soon" title="Acquire the blueprint, or get a community member to craft it (v2)">
-                  needs BP · or community craft · soon
-                </span>
+            {@const showRecipe = isOwned && expandedRecipes.has(c.entityKey)}
+            <li class="wl-row item-row">
+              <div class="wl-main">
+                <span class="wl-name">{nameOf(c.rep)}</span>
+                <span class="wl-cat">{categoryLabel(c.rep)}</span>
+                {#if isOwned}
+                  <button
+                    class="fulfil ready expand"
+                    title="You own the blueprint — craft it in-game. Click to see the recipe."
+                    onclick={() => toggleRecipe(c.entityKey)}
+                  >
+                    ✓ you can craft this
+                    <span class="chev" class:open={showRecipe} aria-hidden="true">▸</span>
+                  </button>
+                {:else}
+                  <span class="fulfil soon" title="Acquire the blueprint, or get a community member to craft it (v2)">
+                    needs BP · or community craft · soon
+                  </span>
+                {/if}
+                <button
+                  class="wl-remove"
+                  title="Remove from wishlist"
+                  onclick={() => removeWant(c, "item")}
+                >×</button>
+              </div>
+
+              {#if showRecipe}
+                <div class="wl-recipe">
+                  {#if c.rep.recipe && c.rep.recipe.ingredients.length > 0}
+                    <ul class="wl-ingredients">
+                      {#each c.rep.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
+                        <li>
+                          <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
+                          <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
+                          {#if ing.min_quality > 0}<span class="ing-q" title="Minimum required quality">≥ Q{ing.min_quality}</span>{/if}
+                        </li>
+                      {/each}
+                    </ul>
+                    {#if c.rep.recipe.craft_time_seconds}
+                      <span class="wl-craft-time" title="Craft time">⏱ {formatCraftTime(c.rep.recipe.craft_time_seconds)}</span>
+                    {/if}
+                  {:else}
+                    <span class="wl-recipe-empty">No recipe data for this item.</span>
+                  {/if}
+                </div>
               {/if}
-              <button
-                class="wl-remove"
-                title="Remove from wishlist"
-                onclick={() => removeWant(c, "item")}
-              >×</button>
             </li>
           {/each}
         </ul>
@@ -379,6 +423,83 @@
   .fulfil.none {
     font-style: italic;
     color: var(--faint);
+  }
+  /* Owned want-item: clickable "you can craft this" chip → reveals the recipe. */
+  button.fulfil {
+    cursor: pointer;
+  }
+  .fulfil.expand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .fulfil.ready:hover {
+    background: var(--ember-glow);
+  }
+  .chev {
+    display: inline-block;
+    font-size: 0.7em;
+    transition: transform 120ms;
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+
+  /* Item row becomes a column so the recipe panel sits below the main line. */
+  .item-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .item-row .wl-main {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+  .wl-recipe {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-top: 0.4rem;
+    padding: 0.45rem 0.2rem 0.2rem;
+    border-top: 1px dashed var(--line);
+  }
+  .wl-ingredients {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.9rem;
+  }
+  .wl-ingredients li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+  }
+  .ing-qty {
+    color: var(--ember);
+    font-variant-numeric: tabular-nums;
+  }
+  .ing-unit {
+    color: var(--faint);
+    font-size: 0.9em;
+  }
+  .ing-name {
+    color: var(--text);
+  }
+  .ing-q {
+    color: var(--faint);
+    font-size: 0.72rem;
+  }
+  .wl-craft-time {
+    font-size: 0.74rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .wl-recipe-empty {
+    font-size: 0.78rem;
+    color: var(--faint);
+    font-style: italic;
   }
   .wl-remove {
     flex: 0 0 auto;

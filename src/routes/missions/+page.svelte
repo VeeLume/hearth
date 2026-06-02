@@ -213,7 +213,9 @@
               <span class="m-name" class:untitled={!m.title}>{missionTitle(m)}</span>
               {#if m.regions.length}
                 {@const systems = systemsOf(m.regions)}
-                <span class="loc" title={m.regions.join(" · ")}>⌖ {systems.join(", ") || m.regions[0]}</span>
+                {#each (systems.length ? systems : [m.regions[0]]) as sys, i (`${sys}-${i}`)}
+                  <span class="loc" title={m.regions.join("\n")}>⌖ {sys}</span>
+                {/each}
               {/if}
               {#if m.once_only}<span class="badge once" title="Non-repeatable">once</span>{/if}
               {#if m.illegal}<span class="badge illegal" title="Illegal contract">illegal</span>{/if}
@@ -239,7 +241,12 @@
               {#if m.regions.length || m.encounter_summary}
                 <div class="meta">
                   {#if m.regions.length}
-                    <span class="meta-item"><span class="meta-k">Location</span> {m.regions.join(" · ")}</span>
+                    <div class="meta-item meta-loc">
+                      <span class="meta-k">Location</span>
+                      <div class="loc-lines">
+                        {#each m.regions as r, i (`${r}-${i}`)}<span>{r}</span>{/each}
+                      </div>
+                    </div>
                   {/if}
                   {#if m.encounter_summary}
                     <span class="meta-item"><span class="meta-k">Encounters</span> {m.encounter_summary}</span>
@@ -263,7 +270,7 @@
                   </span>
                 {/each}
                 {#each m.item_rewards as it, i (i)}
-                  <span class="rw"><span class="rw-k">Item</span> {it.name ?? it.entity_guid}{it.amount > 1 ? ` ×${it.amount}` : ""}</span>
+                  <span class="rw"><span class="rw-k">Item</span> {it.name ?? "Unknown item"}{it.amount > 1 ? ` ×${it.amount}` : ""}</span>
                 {/each}
                 {#if m.cooldown_seconds}
                   <span class="rw"><span class="rw-k">Cooldown</span> {formatSeconds(m.cooldown_seconds)}</span>
@@ -291,7 +298,7 @@
                             title={isOwned ? "Blueprint owned — click to unmark" : "Mark blueprint owned"}
                             onclick={() => toggleOwned(b.blueprint_record_guid)}
                           >{isOwned ? "✓" : ""}</button>
-                          <span class="bp-name">{b.name ?? b.blueprint_record_guid}</span>
+                          <span class="bp-name">{b.name ?? "Unknown blueprint"}</span>
                           <span class="bp-weight" title="Pick probability within this pool">{entryPct(b.weight, total)}</span>
                         </div>
                       {/each}
@@ -479,9 +486,12 @@
   }
 
   .m-detail { padding: 0.2rem 0.8rem 0.8rem 2.8rem; }
-  .meta { display: flex; flex-wrap: wrap; gap: 0.2rem 1.1rem; margin-bottom: 0.5rem; }
+  .meta { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.2rem 1.1rem; margin-bottom: 0.5rem; }
   .meta-item { font-size: 0.78rem; color: var(--text); }
   .meta-k { color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.64rem; margin-right: 0.35rem; }
+  /* Location: label beside a stack of one region per line. */
+  .meta-loc { display: flex; align-items: baseline; }
+  .loc-lines { display: flex; flex-direction: column; gap: 0.1rem; }
   .m-desc { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--muted); max-width: 70ch; white-space: pre-line; }
 
   .rewards { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
