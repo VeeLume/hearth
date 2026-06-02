@@ -23,7 +23,10 @@ async fn main() {
     for bp in &bps {
         let name = bp.display_name.clone().unwrap_or_default();
         if name.to_ascii_lowercase().contains(&needle_lc)
-            || bp.blueprint_record_guid.to_ascii_lowercase().contains(&needle_lc)
+            || bp
+                .blueprint_record_guid
+                .to_ascii_lowercase()
+                .contains(&needle_lc)
         {
             hits += 1;
             println!(

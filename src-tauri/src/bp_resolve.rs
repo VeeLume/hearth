@@ -15,7 +15,10 @@ pub(crate) fn build_name_index(catalog: &[BpView]) -> HashMap<String, Vec<String
         if let Some(name) = &bp.display_name {
             let key = normalize_bp_name(name);
             if !key.is_empty() {
-                index.entry(key).or_default().push(bp.blueprint_record_guid.clone());
+                index
+                    .entry(key)
+                    .or_default()
+                    .push(bp.blueprint_record_guid.clone());
             }
         }
     }
@@ -56,14 +59,18 @@ pub(crate) fn resolve_blueprint_guids<'a>(
         // which already missed, so sub-runs are what we test.
         for end in (start + 1..=words.len()).rev() {
             let candidate = words[start..end].join(" ");
-            let Some(guids) = index.get(&candidate) else { continue };
+            let Some(guids) = index.get(&candidate) else {
+                continue;
+            };
             let len = end - start;
             match best {
                 Some((best_len, _)) if len > best_len => {
                     best = Some((len, guids));
                     ambiguous = false;
                 }
-                Some((best_len, best_guids)) if len == best_len && !std::ptr::eq(best_guids, guids) => {
+                Some((best_len, best_guids))
+                    if len == best_len && !std::ptr::eq(best_guids, guids) =>
+                {
                     ambiguous = true;
                 }
                 None => best = Some((len, guids)),
@@ -91,14 +98,20 @@ mod tests {
         index.insert("bolt".into(), vec!["g-bolt".into()]);
 
         // Exact (FPS gear — sc-langpatch doesn't prefix these).
-        assert_eq!(resolve_blueprint_guids(&index, "Aril Arms"), Some(&vec!["g-aril".to_string()]));
+        assert_eq!(
+            resolve_blueprint_guids(&index, "Aril Arms"),
+            Some(&vec!["g-aril".to_string()])
+        );
         // Added ship-weapon size token → longest whole-word run matches.
         assert_eq!(
             resolve_blueprint_guids(&index, "S3 Attrition-3 Repeater"),
             Some(&vec!["g-attr".to_string()])
         );
         // Added manufacturer-grade token.
-        assert_eq!(resolve_blueprint_guids(&index, "IND2B Citadel"), Some(&vec!["g-cit".to_string()]));
+        assert_eq!(
+            resolve_blueprint_guids(&index, "IND2B Citadel"),
+            Some(&vec!["g-cit".to_string()])
+        );
         // Whole-word alignment: "Bolt" must NOT match inside "Deadbolt".
         assert_eq!(
             resolve_blueprint_guids(&index, "S3 Deadbolt III Cannon"),

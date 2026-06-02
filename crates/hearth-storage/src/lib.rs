@@ -219,7 +219,9 @@ async fn alias_account_id(pool: &DbPool, handle: &str) -> Result<Option<RecordId
             .await
             .context("selecting account_aliases by handle")?;
     match row {
-        Some((id,)) => Ok(Some(RecordId(id.parse().context("parsing alias account_id")?))),
+        Some((id,)) => Ok(Some(RecordId(
+            id.parse().context("parsing alias account_id")?,
+        ))),
         None => Ok(None),
     }
 }
@@ -248,13 +250,12 @@ pub async fn add_account_alias(pool: &DbPool, account_id: RecordId, handle: &str
 
 /// Past handles recorded for an account, oldest-recorded first.
 pub async fn list_account_aliases(pool: &DbPool, account_id: RecordId) -> Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT handle FROM account_aliases WHERE account_id = ? ORDER BY added_at",
-    )
-    .bind(account_id.to_string())
-    .fetch_all(pool)
-    .await
-    .context("listing account_aliases")?;
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT handle FROM account_aliases WHERE account_id = ? ORDER BY added_at")
+            .bind(account_id.to_string())
+            .fetch_all(pool)
+            .await
+            .context("listing account_aliases")?;
     Ok(rows.into_iter().map(|(h,)| h).collect())
 }
 
@@ -284,44 +285,82 @@ pub async fn merge_accounts(pool: &DbPool, from: RecordId, into: RecordId) -> Re
     let mut tx = pool.begin().await.context("beginning merge transaction")?;
 
     sqlx::query("UPDATE OR IGNORE owned_blueprints SET account_id = ? WHERE account_id = ?")
-        .bind(&into_s).bind(&from_s).execute(&mut *tx).await.context("reassigning owned")?;
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("reassigning owned")?;
     sqlx::query("DELETE FROM owned_blueprints WHERE account_id = ?")
-        .bind(&from_s).execute(&mut *tx).await.context("dropping leftover owned")?;
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("dropping leftover owned")?;
     sqlx::query("UPDATE OR IGNORE wishlist_entries SET account_id = ? WHERE account_id = ?")
-        .bind(&into_s).bind(&from_s).execute(&mut *tx).await.context("reassigning wishlist")?;
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("reassigning wishlist")?;
     sqlx::query("DELETE FROM wishlist_entries WHERE account_id = ?")
-        .bind(&from_s).execute(&mut *tx).await.context("dropping leftover wishlist")?;
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("dropping leftover wishlist")?;
 
     // Move from's aliases onto into.
     sqlx::query("UPDATE account_aliases SET account_id = ? WHERE account_id = ?")
-        .bind(&into_s).bind(&from_s).execute(&mut *tx).await.context("moving aliases")?;
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("moving aliases")?;
 
     // Record from's current handle as an alias of into, and carry its hint
     // if into has none.
     let from_row: Option<(String, Option<i64>)> =
         sqlx::query_as("SELECT handle, account_hint FROM accounts WHERE id = ?")
-            .bind(&from_s).fetch_optional(&mut *tx).await.context("fetching from account")?;
+            .bind(&from_s)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("fetching from account")?;
     if let Some((from_handle, from_hint)) = from_row {
         sqlx::query(
             "INSERT INTO account_aliases (handle, account_id, added_at) VALUES (?, ?, ?) \
              ON CONFLICT(handle) DO UPDATE SET account_id = excluded.account_id",
         )
-        .bind(&from_handle).bind(&into_s).bind(Utc::now().to_rfc3339())
-        .execute(&mut *tx).await.context("aliasing from handle")?;
+        .bind(&from_handle)
+        .bind(&into_s)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .context("aliasing from handle")?;
         if let Some(hint) = from_hint {
-            sqlx::query("UPDATE accounts SET account_hint = ? WHERE id = ? AND account_hint IS NULL")
-                .bind(hint).bind(&into_s).execute(&mut *tx).await.context("carrying hint")?;
+            sqlx::query(
+                "UPDATE accounts SET account_hint = ? WHERE id = ? AND account_hint IS NULL",
+            )
+            .bind(hint)
+            .bind(&into_s)
+            .execute(&mut *tx)
+            .await
+            .context("carrying hint")?;
         }
     }
 
     sqlx::query("DELETE FROM accounts WHERE id = ?")
-        .bind(&from_s).execute(&mut *tx).await.context("deleting from account")?;
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("deleting from account")?;
     // Guard against a stale self-alias (into's current handle in the alias table).
     sqlx::query(
         "DELETE FROM account_aliases WHERE account_id = ? \
          AND handle = (SELECT handle FROM accounts WHERE id = ?)",
     )
-    .bind(&into_s).bind(&into_s).execute(&mut *tx).await.context("cleaning self-alias")?;
+    .bind(&into_s)
+    .bind(&into_s)
+    .execute(&mut *tx)
+    .await
+    .context("cleaning self-alias")?;
 
     tx.commit().await.context("committing merge")?;
     Ok(())
@@ -852,10 +891,22 @@ mod tests {
         let a = account(&pool, "NewName").await;
         add_account_alias(&pool, a.id, "OldName").await.unwrap();
 
-        assert_eq!(list_account_aliases(&pool, a.id).await.unwrap(), vec!["OldName"]);
-        assert_eq!(account_id_for_handle(&pool, "OldName").await.unwrap(), Some(a.id));
-        assert_eq!(account_id_for_handle(&pool, "NewName").await.unwrap(), Some(a.id));
-        assert_eq!(account_id_for_handle(&pool, "Stranger").await.unwrap(), None);
+        assert_eq!(
+            list_account_aliases(&pool, a.id).await.unwrap(),
+            vec!["OldName"]
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "OldName").await.unwrap(),
+            Some(a.id)
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "NewName").await.unwrap(),
+            Some(a.id)
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "Stranger").await.unwrap(),
+            None
+        );
 
         // Bootstrapping by the old handle resolves to the same account — no
         // duplicate row (the key guarantee for the rename migration).
@@ -865,7 +916,10 @@ mod tests {
 
         // Aliasing an account's own current handle is a no-op.
         add_account_alias(&pool, a.id, "NewName").await.unwrap();
-        assert_eq!(list_account_aliases(&pool, a.id).await.unwrap(), vec!["OldName"]);
+        assert_eq!(
+            list_account_aliases(&pool, a.id).await.unwrap(),
+            vec!["OldName"]
+        );
     }
 
     #[tokio::test]
@@ -902,8 +956,14 @@ mod tests {
                 .unwrap()
                 .contains(&"OldName".to_string())
         );
-        assert_eq!(account_id_for_handle(&pool, "OldName").await.unwrap(), Some(into.id));
-        assert_eq!(upsert_account_by_handle(&pool, "OldName").await.unwrap().id, into.id);
+        assert_eq!(
+            account_id_for_handle(&pool, "OldName").await.unwrap(),
+            Some(into.id)
+        );
+        assert_eq!(
+            upsert_account_by_handle(&pool, "OldName").await.unwrap().id,
+            into.id
+        );
     }
 
     #[tokio::test]
@@ -912,8 +972,12 @@ mod tests {
         // empty row the eager bootstrap created under the new handle.
         let pool = open_in_memory().await.unwrap();
         let x = account(&pool, "OldName").await;
-        update_account_anchors(&pool, x.id, 4242, "2016-01-31").await.unwrap();
-        add_owned(&pool, scope(&x, Platform::Prod), "bp-x").await.unwrap();
+        update_account_anchors(&pool, x.id, 4242, "2016-01-31")
+            .await
+            .unwrap();
+        add_owned(&pool, scope(&x, Platform::Prod), "bp-x")
+            .await
+            .unwrap();
         let dupe = account(&pool, "NewName").await;
         assert_ne!(dupe.id, x.id);
 
@@ -925,17 +989,32 @@ mod tests {
         let survivor = get_account(&pool, x.id).await.unwrap().unwrap();
         assert_eq!(survivor.handle, "NewName");
         assert_eq!(survivor.citizen_record, Some(4242));
-        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
-        assert_eq!(account_id_for_handle(&pool, "OldName").await.unwrap(), Some(x.id));
-        assert_eq!(account_id_for_handle(&pool, "NewName").await.unwrap(), Some(x.id));
         assert_eq!(
-            list_owned(&pool, scope(&survivor, Platform::Prod)).await.unwrap().len(),
+            list_account_aliases(&pool, x.id).await.unwrap(),
+            vec!["OldName"]
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "OldName").await.unwrap(),
+            Some(x.id)
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "NewName").await.unwrap(),
+            Some(x.id)
+        );
+        assert_eq!(
+            list_owned(&pool, scope(&survivor, Platform::Prod))
+                .await
+                .unwrap()
+                .len(),
             1
         );
 
         // Idempotent — re-applying the current handle changes nothing.
         apply_rename(&pool, x.id, "NewName").await.unwrap();
-        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
+        assert_eq!(
+            list_account_aliases(&pool, x.id).await.unwrap(),
+            vec!["OldName"]
+        );
     }
 
     #[tokio::test]
@@ -946,7 +1025,13 @@ mod tests {
         apply_rename(&pool, x.id, "FreshName").await.unwrap();
         let survivor = get_account(&pool, x.id).await.unwrap().unwrap();
         assert_eq!(survivor.handle, "FreshName");
-        assert_eq!(list_account_aliases(&pool, x.id).await.unwrap(), vec!["OldName"]);
-        assert_eq!(account_id_for_handle(&pool, "FreshName").await.unwrap(), Some(x.id));
+        assert_eq!(
+            list_account_aliases(&pool, x.id).await.unwrap(),
+            vec!["OldName"]
+        );
+        assert_eq!(
+            account_id_for_handle(&pool, "FreshName").await.unwrap(),
+            Some(x.id)
+        );
     }
 }

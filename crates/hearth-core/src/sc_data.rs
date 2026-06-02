@@ -64,14 +64,14 @@ fn project_recipe(blueprint: &Blueprint) -> Option<Recipe> {
     {
         collect_resource_costs(cost, &mut ingredients);
     }
-    Some(Recipe { craft_time_seconds, ingredients })
+    Some(Recipe {
+        craft_time_seconds,
+        ingredients,
+    })
 }
 
 fn duration_to_seconds(d: &ScDuration) -> f32 {
-    (d.days as f32) * 86_400.0
-        + (d.hours as f32) * 3_600.0
-        + (d.minutes as f32) * 60.0
-        + d.seconds
+    (d.days as f32) * 86_400.0 + (d.hours as f32) * 3_600.0 + (d.minutes as f32) * 60.0 + d.seconds
 }
 
 /// Walk the polymorphic `Cost` tree and collect every `Resource(...)`

@@ -40,10 +40,7 @@ pub enum ProfileError {
     #[error("missing field on profile page: {0}")]
     MissingField(&'static str),
     #[error("could not parse {field}: {detail}")]
-    Parse {
-        field: &'static str,
-        detail: String,
-    },
+    Parse { field: &'static str, detail: String },
 }
 
 /// Parse a `/citizens/<handle>` HTML body into a `ProfileInfo`.
@@ -51,10 +48,10 @@ pub fn parse(html: &str) -> Result<ProfileInfo, ProfileError> {
     let doc = Html::parse_document(html);
 
     let citizen_record = parse_citizen_record(&doc)?;
-    let handle = find_label_value(&doc, "Handle name")
-        .ok_or(ProfileError::MissingField("Handle name"))?;
-    let enlisted_raw = find_label_value(&doc, "Enlisted")
-        .ok_or(ProfileError::MissingField("Enlisted"))?;
+    let handle =
+        find_label_value(&doc, "Handle name").ok_or(ProfileError::MissingField("Handle name"))?;
+    let enlisted_raw =
+        find_label_value(&doc, "Enlisted").ok_or(ProfileError::MissingField("Enlisted"))?;
     let enlisted = normalize_enlisted(&enlisted_raw)?;
 
     let primary_org_sid = find_label_value(&doc, "Spectrum Identification (SID)")

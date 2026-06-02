@@ -153,12 +153,31 @@ fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::Session
             {
                 // Hit — reuse the cached summary, keep caching it.
                 let summary = c.summary.clone();
-                return Some((summary.clone(), Some((key, CachedScan { mtime, len, summary }))));
+                return Some((
+                    summary.clone(),
+                    Some((
+                        key,
+                        CachedScan {
+                            mtime,
+                            len,
+                            summary,
+                        },
+                    )),
+                ));
             }
 
             let file = std::fs::File::open(path).ok()?;
             let summary = sensors::summarize_session(std::io::BufReader::new(file));
-            let entry = (!is_live).then(|| (key, CachedScan { mtime, len, summary: summary.clone() }));
+            let entry = (!is_live).then(|| {
+                (
+                    key,
+                    CachedScan {
+                        mtime,
+                        len,
+                        summary: summary.clone(),
+                    },
+                )
+            });
             Some((summary, entry))
         })
         .collect();
@@ -190,13 +209,15 @@ fn group_identities(summaries: Vec<sensors::SessionSummary>) -> Vec<ScannedIdent
             (None, Some(handle)) => format!("handle:{}", handle.to_lowercase()),
             (None, None) => continue, // anonymous session — nothing to attribute
         };
-        let group = groups.entry(key.clone()).or_insert_with(|| ScannedIdentity {
-            key,
-            account_hint: s.account_hint,
-            handles: Vec::new(),
-            blueprint_names: Vec::new(),
-            session_count: 0,
-        });
+        let group = groups
+            .entry(key.clone())
+            .or_insert_with(|| ScannedIdentity {
+                key,
+                account_hint: s.account_hint,
+                handles: Vec::new(),
+                blueprint_names: Vec::new(),
+                session_count: 0,
+            });
         group.session_count += 1;
         if group.account_hint.is_none() {
             group.account_hint = s.account_hint;
@@ -214,7 +235,11 @@ fn group_identities(summaries: Vec<sensors::SessionSummary>) -> Vec<ScannedIdent
     }
     let mut out: Vec<ScannedIdentity> = groups.into_values().collect();
     // Most-played identities first.
-    out.sort_by(|a, b| b.session_count.cmp(&a.session_count).then(a.key.cmp(&b.key)));
+    out.sort_by(|a, b| {
+        b.session_count
+            .cmp(&a.session_count)
+            .then(a.key.cmp(&b.key))
+    });
     out
 }
 
@@ -363,5 +388,9 @@ pub(crate) async fn apply_log_import(
 
     state.import_scan.lock().unwrap().clear();
     state.refresh_owned_export().await;
-    Ok(ImportResult { accounts_touched, newly_owned, unresolved })
+    Ok(ImportResult {
+        accounts_touched,
+        newly_owned,
+        unresolved,
+    })
 }

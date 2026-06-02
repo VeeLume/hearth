@@ -166,10 +166,9 @@ impl AppState {
         //    regardless of "Remember Me", so it reflects who is actually
         //    playing right now (or who played last).
         let log_path = sensors::game_log_path(&d.install.root);
-        if let Some(h) =
-            tokio::task::spawn_blocking(move || read_game_log_handle(&log_path))
-                .await
-                .map_err(|e| AppError::Internal(format!("game-log read join: {e}")))?
+        if let Some(h) = tokio::task::spawn_blocking(move || read_game_log_handle(&log_path))
+            .await
+            .map_err(|e| AppError::Internal(format!("game-log read join: {e}")))?
         {
             tracing::info!(handle = %h, "active handle resolved from Game.log (launcher identity unavailable)");
             return Ok(h);
@@ -262,7 +261,11 @@ pub(crate) fn app_data_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("HEARTH_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    let namespace = if cfg!(debug_assertions) { "hearth-dev" } else { "hearth" };
+    let namespace = if cfg!(debug_assertions) {
+        "hearth-dev"
+    } else {
+        "hearth"
+    };
     dirs::data_dir()
         .map(|d| d.join(namespace))
         .expect("OS data dir not resolvable")
@@ -379,9 +382,7 @@ async fn toggle_owned(
 
 #[tauri::command]
 #[specta::specta]
-async fn list_wishlist(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<WishlistEntry>, AppError> {
+async fn list_wishlist(state: tauri::State<'_, AppState>) -> Result<Vec<WishlistEntry>, AppError> {
     let scope = state.active_scope().await?;
     let db = state.db().await?;
     hearth_storage::list_wishlist(db, scope)
@@ -579,10 +580,7 @@ async fn wipe_sc_cache(app: tauri::AppHandle) -> Result<(), AppError> {
     let cache_root = app_data_root().join("cache");
     if cache_root.exists() {
         std::fs::remove_dir_all(&cache_root).map_err(|e| {
-            AppError::Internal(format!(
-                "removing cache dir {}: {e}",
-                cache_root.display()
-            ))
+            AppError::Internal(format!("removing cache dir {}: {e}", cache_root.display()))
         })?;
         tracing::info!(path = %cache_root.display(), "wiped SC snapshot cache");
     } else {
@@ -706,7 +704,10 @@ pub(crate) fn emit_scope_changed(app: &tauri::AppHandle) {
 fn read_game_log_handle(path: &std::path::Path) -> Option<String> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
-    for bytes in std::io::BufReader::new(file).split(b'\n').map_while(Result::ok) {
+    for bytes in std::io::BufReader::new(file)
+        .split(b'\n')
+        .map_while(Result::ok)
+    {
         let line = String::from_utf8_lossy(&bytes);
         if let Some(sensors::SensedEvent::SessionHandle(h)) = sensors::parse::parse_line(&line) {
             return Some(h);
@@ -752,7 +753,10 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
             Some(guard)
         }
         None => {
-            tracing_subscriber::registry().with(filter).with(console).init();
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(console)
+                .init();
             None
         }
     }

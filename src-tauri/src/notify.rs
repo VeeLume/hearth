@@ -49,7 +49,12 @@ pub struct Notification {
 
 impl Notification {
     pub fn new(level: NotifLevel, title: impl Into<String>) -> Self {
-        Self { level, title: title.into(), body: None, action: None }
+        Self {
+            level,
+            title: title.into(),
+            body: None,
+            action: None,
+        }
     }
 
     pub fn info(title: impl Into<String>) -> Self {
@@ -73,7 +78,10 @@ impl Notification {
 
     /// Attach a "View →"-style action that navigates to an in-app route.
     pub fn with_action(mut self, label: impl Into<String>, href: impl Into<String>) -> Self {
-        self.action = Some(NotifAction { label: label.into(), href: href.into() });
+        self.action = Some(NotifAction {
+            label: label.into(),
+            href: href.into(),
+        });
         self
     }
 }

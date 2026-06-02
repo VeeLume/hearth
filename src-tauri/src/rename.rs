@@ -14,7 +14,9 @@ use hearth_storage::DbPool;
 use tauri::Manager;
 
 use crate::error::AppError;
-use crate::settings::{LAST_ACTIVE_HANDLE, ONBOARDING_COMPLETED, ONLINE_ENABLED, read_bool_setting};
+use crate::settings::{
+    LAST_ACTIVE_HANDLE, ONBOARDING_COMPLETED, ONLINE_ENABLED, read_bool_setting,
+};
 use crate::{AppState, emit_ownership_changed, emit_scope_changed, identity, notify};
 
 pub(crate) fn spawn_rename_check(handle: tauri::AppHandle) {
@@ -67,7 +69,10 @@ async fn rename_check(app: &tauri::AppHandle) -> Result<(), AppError> {
         .into_iter()
         .filter(|a| !a.handle.eq_ignore_ascii_case(&current_handle))
         .collect();
-    let anchored: Vec<&Account> = others.iter().filter(|a| a.citizen_record.is_some()).collect();
+    let anchored: Vec<&Account> = others
+        .iter()
+        .filter(|a| a.citizen_record.is_some())
+        .collect();
 
     if anchored.is_empty() {
         // Nothing to confirm against. If there's exactly one prior account, hint
@@ -102,7 +107,10 @@ async fn rename_check(app: &tauri::AppHandle) -> Result<(), AppError> {
         }
     };
 
-    match anchored.iter().find(|a| a.citizen_record == Some(info.citizen_record)) {
+    match anchored
+        .iter()
+        .find(|a| a.citizen_record == Some(info.citizen_record))
+    {
         Some(src) => {
             let (src_id, old_handle) = (src.id, src.handle.clone());
             hearth_storage::apply_rename(db, src_id, &current_handle)

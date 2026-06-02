@@ -167,7 +167,12 @@ fn discover_blocking() -> Result<Discovery> {
         elapsed_ms = start.elapsed().as_millis(),
         "discovery complete"
     );
-    Ok(Discovery { channel, platform, handle, install })
+    Ok(Discovery {
+        channel,
+        platform,
+        handle,
+        install,
+    })
 }
 
 /// Build the cooked SC reference data (catalog + missions) for the given
@@ -226,8 +231,8 @@ fn build_data_blocking(install: Installation) -> Result<CookedData> {
         .with_context(|| format!("opening Data.p4k for {channel:?}"))?;
 
     tracing::info!("extracting AssetData ({:?})", channel);
-    let asset_data = AssetData::extract(&assets, &AssetConfig::minimal())
-        .context("AssetData::extract")?;
+    let asset_data =
+        AssetData::extract(&assets, &AssetConfig::minimal()).context("AssetData::extract")?;
     tracing::info!("parsing Datacore ({:?})", channel);
     let datacore = Datacore::parse(&assets, &asset_data).context("Datacore::parse")?;
 
@@ -235,8 +240,7 @@ fn build_data_blocking(install: Installation) -> Result<CookedData> {
     // persist the cache is non-fatal (logged inside).
     save_extract(&cache_dir, &install, &assets);
 
-    let locale_bytes =
-        read_locale_bytes(&assets).context("reading global.ini from Data.p4k")?;
+    let locale_bytes = read_locale_bytes(&assets).context("reading global.ini from Data.p4k")?;
     drop(assets);
     let locale = build_locale_map(&locale_bytes)?;
 
@@ -334,7 +338,10 @@ fn save_processed(cache_dir: &Path, install: &Installation, cooked: &CookedData)
     let meta = snapshot_meta_from_install(install);
     let snap = ProcessedSnapshot::new(meta, HEARTH_CATALOG_COOK_VERSION, cooked.clone());
     if let Err(e) = snap.save(&path) {
-        tracing::warn!("failed to save processed snapshot to {}: {e}", path.display());
+        tracing::warn!(
+            "failed to save processed snapshot to {}: {e}",
+            path.display()
+        );
     } else {
         tracing::debug!("wrote processed snapshot to {}", path.display());
     }
@@ -486,7 +493,9 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
         if let Some(entity_guid) = blueprint.crafted_entity_guid() {
             // item_type/item_sub_type are typed enums; the IPC boundary
             // carries their DCB-string form (what itemTypes.ts keys on).
-            view.item_type = items.item_type(&entity_guid).map(|t| t.as_dcb_str().to_owned());
+            view.item_type = items
+                .item_type(&entity_guid)
+                .map(|t| t.as_dcb_str().to_owned());
             view.item_sub_type = items
                 .item_sub_type(&entity_guid)
                 .map(|t| t.as_dcb_str().to_owned());
@@ -807,7 +816,6 @@ fn fill_resource_names(
         }
     }
 }
-
 
 fn build_locale_map(bytes: &[u8]) -> Result<LocaleMap> {
     let (decoded, _, had_errors) = encoding_rs::UTF_16LE.decode(bytes);
