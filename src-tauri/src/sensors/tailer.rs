@@ -1,14 +1,11 @@
-//! v1.5 — Game.log tailing and automatic SC-state sensing.
+//! Reading `Game.log` into [`SensedEvent`]s — whole-file summary, one-shot
+//! scan, and the incremental poll-based tailer.
 //!
-//! Kept in its own module from Stage 0 so when the log format inevitably
-//! churns with a new SC patch, the blast radius is local and replaceable.
+//! The format-fragile per-line recognition lives in [`super::parse`]; this
+//! module is the I/O layer that feeds bytes through it. Two read shapes:
 //!
-//! # Shape
-//!
-//! - [`parse`] — pure, per-line recognisers (the format-fragile core, fully
-//!   unit-tested against real log samples).
-//! - [`scan_reader`] — parse a whole reader at once. Used for a one-shot
-//!   backfill of the current session's log and in tests.
+//! - [`summarize_session`] / [`scan_reader`] — whole-reader passes (a rotated
+//!   backup is one finished session, so there's no offset bookkeeping).
 //! - [`GameLogTailer`] — an incremental reader holding a byte offset; each
 //!   [`GameLogTailer::poll`] returns the events from bytes appended since the
 //!   last poll. A trailing partial line is carried until its newline arrives.
@@ -17,32 +14,15 @@
 //! that backfills blueprints already received this session **and** captures
 //! the session header (env + handle) the pollution guard needs, before
 //! switching to incremental tailing.
-//!
-//! Wiring into `AppState` (resolve blueprint name → guid via the catalog,
-//! pollution-guard the session against the active account + platform, then
-//! mark owned) lives with the commands — this module only turns log bytes
-//! into [`SensedEvent`]s.
-
-pub mod parse;
-
-pub use parse::SensedEvent;
 
 use std::collections::HashSet;
 use std::io::{BufRead, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use hearth_core::Platform;
 
-/// The conventional `Game.log` path inside an install's channel directory
-/// (e.g. `…/StarCitizen/LIVE/Game.log`).
-pub fn game_log_path(channel_dir: &Path) -> PathBuf {
-    channel_dir.join("Game.log")
-}
-
-/// The directory of rotated session logs (`…/StarCitizen/LIVE/logbackups/`).
-pub fn log_backups_dir(channel_dir: &Path) -> PathBuf {
-    channel_dir.join("logbackups")
-}
+use super::SensedEvent;
+use super::parse;
 
 /// What one session log (the live `Game.log` or a rotated backup) tells us:
 /// who played, on what platform, and which blueprints they received. The
