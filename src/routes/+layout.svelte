@@ -11,17 +11,17 @@
   import { primaryNav, futureNav } from "$lib/nav";
   import Toasts from "$lib/components/Toasts.svelte";
   import NotificationCenter from "$lib/components/NotificationCenter.svelte";
-  import { notifications, listenForNotifications, markAllRead } from "$lib/notifications.svelte";
+  import { notifications, listenForNotifications, markAllRead } from "$lib/state/notifications.svelte";
   import {
     ensureBlueprints,
     ensureOwnership,
     ensureMissions,
     ensureGrantedBy,
     listenForOwnershipChanges,
-  } from "$lib/data.svelte";
+  } from "$lib/state/data.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
-  import { onboarding, maybeStart } from "$lib/onboardingStore.svelte";
-  import { maybeStartupImport } from "$lib/importStore.svelte";
+  import { onboarding, maybeStart } from "$lib/state/onboardingStore.svelte";
+  import { maybeStartupImport } from "$lib/state/importStore.svelte";
   import { checkForUpdates } from "$lib/updater";
   import "../app.css";
 

@@ -9,7 +9,7 @@
     isSticky,
     type Notification,
     type NotifLevel,
-  } from "$lib/notifications.svelte";
+  } from "$lib/state/notifications.svelte";
 
   const AUTO_DISMISS_MS = 6500;
 

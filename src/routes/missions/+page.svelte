@@ -4,7 +4,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { commands, errText, type MissionView } from "$lib/ipc";
   import Loading from "$lib/components/Loading.svelte";
-  import { data, owned, ensureMissions, ensureOwnership } from "$lib/data.svelte";
+  import { data, owned, ensureMissions, ensureOwnership } from "$lib/state/data.svelte";
 
   // Missions through the blueprint lens. Hearth is BP-focused, so a mission's
   // tracked value is "can it still give me a blueprint I don't own?". There's

@@ -26,7 +26,7 @@
     ensureBlueprints,
     ensureOwnership,
     ensureGrantedBy,
-  } from "$lib/data.svelte";
+  } from "$lib/state/data.svelte";
 
   // The wishlist is fulfilment-focused: the catalog is where you *find* and
   // flag things; here you see how to *get* them. Two intents, two questions:

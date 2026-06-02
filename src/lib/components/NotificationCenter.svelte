@@ -8,7 +8,7 @@
     dismiss,
     clearAll,
     type NotifLevel,
-  } from "$lib/notifications.svelte";
+  } from "$lib/state/notifications.svelte";
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props();
 

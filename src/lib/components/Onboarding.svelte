@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, errText, type ActiveScope, type AppSettings } from "$lib/ipc";
-  import { finishOnboarding } from "$lib/onboardingStore.svelte";
-  import { bpImport, runImport } from "$lib/importStore.svelte";
+  import { finishOnboarding } from "$lib/state/onboardingStore.svelte";
+  import { bpImport, runImport } from "$lib/state/importStore.svelte";
 
   // First-launch flow: Welcome → Your account → Tracking. Lean by design —
   // confirms the account and sets the data source; importing history and live

@@ -20,7 +20,7 @@
     wishSet,
     ensureBlueprints,
     ensureOwnership,
-  } from "$lib/data.svelte";
+  } from "$lib/state/data.svelte";
 
   // Blueprints + ownership live in the shared store ($lib/data.svelte) so they
   // survive navigation (no per-page refetch / loading flash) and stay
