@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { commands, type BpView, type WishIntent } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
+  import Loading from "$lib/Loading.svelte";
   import {
     type Craftable,
     nameOf,
@@ -11,20 +12,28 @@
     formatCraftTime,
     formatScu,
   } from "$lib/catalog";
+  import {
+    data,
+    owned,
+    wishRecipe,
+    wishItem,
+    wishSet,
+    ensureBlueprints,
+    ensureOwnership,
+    refreshOwnership,
+  } from "$lib/data.svelte";
 
-  let blueprints = $state<BpView[]>([]);
-  // SvelteSet is reactive on .has() / .add() / .delete() — using a
-  // plain Set wrapped in $state had subtle reactivity gaps where
-  // dependent template expressions ({@const isOwned = owned.has(...)})
-  // didn't always re-run after toggle.
-  let owned = new SvelteSet<string>();
-  // Wishlist is two independent intents (a BP can carry both). Each set
-  // holds blueprint_record_guids wanted for that intent. Recipe = want
-  // the blueprint; item = want a crafted copy. See `WishIntent`.
-  let wishRecipe = new SvelteSet<string>();
-  let wishItem = new SvelteSet<string>();
-  let loading = $state(true);
+  // Blueprints + ownership live in the shared store ($lib/data.svelte) so they
+  // survive navigation (no per-page refetch / loading flash) and stay
+  // consistent across pages. `blueprints` aliases the store for the template +
+  // derived code below; `owned` / `wishRecipe` / `wishItem` / `wishSet` are the
+  // shared reactive sets, imported above.
+  const blueprints = $derived(data.blueprints);
+  let loading = $state(!(data.blueprintsReady && data.ownershipReady));
   let errorMessage = $state<string | null>(null);
+  // Live-sync button state (the loading screen handles its own path hint).
+  let liveSync = $state<{ available: boolean; enabled: boolean } | null>(null);
+  let syncing = $state(false);
   let query = $state("");
   // Expansion keys for rows currently showing their recipe / variant
   // panel. Leaf rows key on blueprint_record_guid; variant bundles
@@ -34,9 +43,14 @@
   type Filter = "all" | "owned" | "unowned" | "wantbp" | "wantitem";
   let filter = $state<Filter>("all");
 
-  /** The reactive set backing a wishlist intent. */
-  function wishSet(intent: WishIntent): SvelteSet<string> {
-    return intent === "recipe" ? wishRecipe : wishItem;
+  /** Catalog-side live sync: fetch from the account, then reflect the
+   *  reconciled ownership locally. Result/errors surface via notifications. */
+  async function syncNow() {
+    if (syncing) return;
+    syncing = true;
+    const r = await commands.liveSyncNow();
+    if (r.status === "ok") await refreshOwnership();
+    syncing = false;
   }
 
   function toggleExpanded(key: string) {
@@ -165,26 +179,16 @@
   }
 
   onMount(async () => {
-    const [bpResult, ownedResult, wishResult] = await Promise.all([
-      commands.listBlueprints(),
-      commands.listOwned(),
-      commands.listWishlist(),
-    ]);
-    if (bpResult.status === "ok") {
-      blueprints = bpResult.data;
-    } else {
-      errorMessage = `${bpResult.error.kind}: ${bpResult.error.message}`;
-    }
-    if (ownedResult.status === "ok") {
-      owned.clear();
-      for (const o of ownedResult.data) owned.add(o.blueprint_guid);
-    }
-    if (wishResult.status === "ok") {
-      wishRecipe.clear();
-      wishItem.clear();
-      for (const w of wishResult.data)
-        wishSet(w.intent).add(w.blueprint_guid);
-    }
+    // Fast, fire-and-forget: learn whether the live-sync button should show.
+    // Doesn't block the (slow) catalog load below.
+    commands.getSettings().then((r) => {
+      if (r.status === "ok") {
+        liveSync = { available: r.data.live_sync_available, enabled: r.data.live_sync_enabled };
+      }
+    });
+
+    const [bpErr] = await Promise.all([ensureBlueprints(), ensureOwnership()]);
+    if (bpErr) errorMessage = bpErr;
     loading = false;
   });
 
@@ -389,12 +393,34 @@
     bind:value={query}
     disabled={loading}
   />
+  {#if liveSync?.available && liveSync.enabled}
+    <button
+      class="sync-btn"
+      class:syncing
+      onclick={syncNow}
+      disabled={syncing || loading}
+      title="Sync owned blueprints from your account"
+      aria-label="Sync owned blueprints"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M23 4v6h-6" />
+        <path d="M1 20v-6h6" />
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+      </svg>
+    </button>
+  {/if}
 </header>
 
 {#if loading}
-  <p class="status">
-    Loading blueprints… <span class="status-sub">first run after an SC patch parses the game data (~30 s)</span>
-  </p>
+  <Loading />
 {:else if errorMessage}
   <div class="error">
     <strong>Couldn't load blueprints.</strong>
@@ -674,17 +700,50 @@
     opacity: 0.6;
   }
 
-  .status,
   .error {
     padding: 1rem 1.6rem;
     color: var(--muted);
   }
-  .status-sub {
-    color: var(--faint);
-    font-size: 0.82rem;
-  }
   .error strong {
     color: var(--bad);
+  }
+
+  /* Spin animation — used by the live-sync button below while syncing. */
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Catalog live-sync button — only shown when live sync is enabled. */
+  .sync-btn {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 7px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 90ms, border-color 90ms;
+  }
+  .sync-btn:hover:not(:disabled) {
+    color: var(--ember);
+    border-color: var(--ember-dim);
+  }
+  .sync-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+  .sync-btn svg {
+    width: 1rem;
+    height: 1rem;
+    display: block;
+  }
+  .sync-btn.syncing svg {
+    animation: spin 0.8s linear infinite;
   }
   .error .hint {
     color: var(--faint);

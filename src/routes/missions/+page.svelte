@@ -3,6 +3,8 @@
   import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
   import { commands, type MissionView } from "$lib/bindings";
+  import Loading from "$lib/Loading.svelte";
+  import { data, owned, ensureMissions, ensureOwnership } from "$lib/data.svelte";
 
   // Missions through the blueprint lens. Hearth is BP-focused, so a mission's
   // tracked value is "can it still give me a blueprint I don't own?". There's
@@ -10,9 +12,10 @@
   // across its reward pool(s), derived from the catalog's owned set. A reward's
   // checkbox IS the catalog ownership toggle (collecting it = owning the BP).
 
-  let missions = $state<MissionView[]>([]);
-  let owned = new SvelteSet<string>(); // blueprint_record_guids
-  let loading = $state(true);
+  // Missions + ownership come from the shared store ($lib/data.svelte) so
+  // navigation doesn't re-fetch. `owned` is the shared set (imported).
+  const missions = $derived(data.missions);
+  let loading = $state(!(data.missionsReady && data.ownershipReady));
   let errorMessage = $state<string | null>(null);
   let query = $state("");
   let expanded = new SvelteSet<string>();
@@ -23,13 +26,8 @@
   const RENDER_CAP = 500;
 
   onMount(async () => {
-    const [mResult, oResult] = await Promise.all([
-      commands.listMissions(),
-      commands.listOwned(),
-    ]);
-    if (mResult.status === "ok") missions = mResult.data;
-    else errorMessage = `${mResult.error.kind}: ${mResult.error.message}`;
-    if (oResult.status === "ok") for (const o of oResult.data) owned.add(o.blueprint_guid);
+    const [mErr] = await Promise.all([ensureMissions(), ensureOwnership()]);
+    if (mErr) errorMessage = mErr;
     loading = false;
   });
 
@@ -161,7 +159,7 @@
 </header>
 
 {#if loading}
-  <p class="status">Loading missions…</p>
+  <Loading />
 {:else if errorMessage}
   <div class="error"><strong>Couldn't load missions.</strong><p>{errorMessage}</p></div>
 {:else}

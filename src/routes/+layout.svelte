@@ -7,6 +7,12 @@
   import Toasts from "$lib/Toasts.svelte";
   import NotificationCenter from "$lib/NotificationCenter.svelte";
   import { notifications, listenForNotifications, markAllRead } from "$lib/notifications.svelte";
+  import {
+    ensureBlueprints,
+    ensureOwnership,
+    ensureMissions,
+    ensureGrantedBy,
+  } from "$lib/data.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -34,6 +40,14 @@
     // The single funnel: every backend `notify` event lands in the store,
     // which drives both the toast stack and the notification center.
     unlisten = await listenForNotifications();
+
+    // Warm the shared data store in the background (one backend load serves
+    // all of these) so every page renders instantly when reached — no
+    // per-page fetch or loading flash, even on the first visit.
+    ensureBlueprints();
+    ensureOwnership();
+    ensureMissions();
+    ensureGrantedBy();
 
     // Remove the pre-hydration splash from app.html now that Svelte
     // is in control. Fades out via the .hidden class for ~200ms.

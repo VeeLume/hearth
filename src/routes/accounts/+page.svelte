@@ -7,6 +7,7 @@
     type ImportChoice,
     type ImportResult,
   } from "$lib/bindings";
+  import Loading from "$lib/Loading.svelte";
 
   // Accounts management + Game.log history import.
   //
@@ -139,7 +140,7 @@
   <div class="card">
     <h2>Known accounts</h2>
     {#if loading}
-      <p class="muted">Loading…</p>
+      <Loading message="Loading accounts…" />
     {:else if accounts.length === 0}
       <p class="muted">No accounts yet — they're created from your launcher handle on first use.</p>
     {:else}

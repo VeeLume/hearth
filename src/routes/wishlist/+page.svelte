@@ -8,6 +8,7 @@
     type WishIntent,
   } from "$lib/bindings";
   import { categoryFor } from "$lib/categories";
+  import Loading from "$lib/Loading.svelte";
   import {
     type Craftable,
     nameOf,
@@ -15,6 +16,16 @@
     formatScu,
     formatCraftTime,
   } from "$lib/catalog";
+  import {
+    data,
+    owned,
+    wishRecipe,
+    wishItem,
+    wishSet,
+    ensureBlueprints,
+    ensureOwnership,
+    ensureGrantedBy,
+  } from "$lib/data.svelte";
 
   // The wishlist is fulfilment-focused: the catalog is where you *find* and
   // flag things; here you see how to *get* them. Two intents, two questions:
@@ -25,30 +36,24 @@
   // ⚐ and the owned-item recipe are live; the unowned-item community-craft
   // path is still a placeholder.
 
-  let blueprints = $state<BpView[]>([]);
-  let owned = new SvelteSet<string>();
-  let wishRecipe = new SvelteSet<string>();
-  let wishItem = new SvelteSet<string>();
-  // blueprint_record_guid → missions that grant it (the ⚐ fulfilment source).
-  let grantedBy = $state<Partial<Record<string, MissionRef[]>>>({});
-  let loading = $state(true);
+  // All data comes from the shared store ($lib/data.svelte) so navigation
+  // doesn't re-fetch. `blueprints` / `grantedBy` alias the store; `owned` /
+  // `wishRecipe` / `wishItem` / `wishSet` are the shared reactive sets.
+  // `grantedBy`: blueprint_record_guid → missions that grant it (the ⚐ source).
+  const blueprints = $derived(data.blueprints);
+  const grantedBy = $derived(data.grantedBy);
+  let loading = $state(
+    !(data.blueprintsReady && data.ownershipReady && data.grantedByReady),
+  );
   let errorMessage = $state<string | null>(null);
 
   onMount(async () => {
-    const [bpResult, ownedResult, wishResult, missionResult] = await Promise.all([
-      commands.listBlueprints(),
-      commands.listOwned(),
-      commands.listWishlist(),
-      commands.missionsByBlueprint(),
+    const [bpErr] = await Promise.all([
+      ensureBlueprints(),
+      ensureOwnership(),
+      ensureGrantedBy(),
     ]);
-    if (bpResult.status === "ok") blueprints = bpResult.data;
-    else errorMessage = `${bpResult.error.kind}: ${bpResult.error.message}`;
-    if (ownedResult.status === "ok")
-      for (const o of ownedResult.data) owned.add(o.blueprint_guid);
-    if (wishResult.status === "ok")
-      for (const w of wishResult.data)
-        (w.intent === "recipe" ? wishRecipe : wishItem).add(w.blueprint_guid);
-    if (missionResult.status === "ok") grantedBy = missionResult.data;
+    if (bpErr) errorMessage = bpErr;
     loading = false;
   });
 
@@ -83,10 +88,6 @@
       name: nameOf(c.rep),
     });
     return `/missions?${params}`;
-  }
-
-  function wishSet(intent: WishIntent): SvelteSet<string> {
-    return intent === "recipe" ? wishRecipe : wishItem;
   }
 
   function craftableOwned(c: Craftable): boolean {
@@ -152,7 +153,7 @@
 </header>
 
 {#if loading}
-  <p class="status">Loading…</p>
+  <Loading />
 {:else if errorMessage}
   <div class="error"><strong>Couldn't load the wishlist.</strong><p>{errorMessage}</p></div>
 {:else}
@@ -303,7 +304,6 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
-  .status,
   .error {
     padding: 1rem 1.6rem;
     color: var(--muted);
