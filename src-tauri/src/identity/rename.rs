@@ -17,7 +17,9 @@ use crate::error::AppError;
 use crate::settings::{
     LAST_ACTIVE_HANDLE, ONBOARDING_COMPLETED, ONLINE_ENABLED, read_bool_setting,
 };
-use crate::{AppState, emit_ownership_changed, emit_scope_changed, identity, notify};
+use crate::{AppState, emit_ownership_changed, emit_scope_changed, notify};
+
+use super::fetch_profile;
 
 pub(crate) fn spawn_rename_check(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -95,7 +97,7 @@ async fn rename_check(app: &tauri::AppHandle) -> Result<(), AppError> {
     }
 
     // Scrape the public profile for the immutable citizen record.
-    let info = match identity::fetch_profile(&current_handle).await {
+    let info = match fetch_profile(&current_handle).await {
         Ok(info) => info,
         Err(e) => {
             tracing::info!("rename check: profile fetch failed for {current_handle}: {e}");
