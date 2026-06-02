@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, errText, type AppSettings } from "$lib/ipc";
-  import AccountManager from "$lib/AccountManager.svelte";
-  import BlueprintImport from "$lib/BlueprintImport.svelte";
+  import AccountManager from "$lib/components/AccountManager.svelte";
+  import BlueprintImport from "$lib/components/BlueprintImport.svelte";
   import { openOnboarding } from "$lib/onboardingStore.svelte";
 
   let tab = $state<"account" | "import" | "advanced">("account");

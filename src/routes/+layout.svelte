@@ -9,8 +9,8 @@
     type UnlistenFn,
   } from "$lib/ipc";
   import { primaryNav, futureNav } from "$lib/nav";
-  import Toasts from "$lib/Toasts.svelte";
-  import NotificationCenter from "$lib/NotificationCenter.svelte";
+  import Toasts from "$lib/components/Toasts.svelte";
+  import NotificationCenter from "$lib/components/NotificationCenter.svelte";
   import { notifications, listenForNotifications, markAllRead } from "$lib/notifications.svelte";
   import {
     ensureBlueprints,
@@ -19,7 +19,7 @@
     ensureGrantedBy,
     listenForOwnershipChanges,
   } from "$lib/data.svelte";
-  import Onboarding from "$lib/Onboarding.svelte";
+  import Onboarding from "$lib/components/Onboarding.svelte";
   import { onboarding, maybeStart } from "$lib/onboardingStore.svelte";
   import { maybeStartupImport } from "$lib/importStore.svelte";
   import { checkForUpdates } from "$lib/updater";

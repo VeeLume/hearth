@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, errText, type AccountWithAliases, type AppSettings } from "$lib/ipc";
-  import Loading from "$lib/Loading.svelte";
+  import Loading from "$lib/components/Loading.svelte";
 
   // Reusable accounts manager — rendered in Settings → Account, and (later) in
   // the first-launch onboarding. RSI handles are mutable (renames); identity is

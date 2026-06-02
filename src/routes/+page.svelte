@@ -3,7 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { commands, errText, type BpView, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/categories";
-  import Loading from "$lib/Loading.svelte";
+  import Loading from "$lib/components/Loading.svelte";
   import {
     type Craftable,
     nameOf,

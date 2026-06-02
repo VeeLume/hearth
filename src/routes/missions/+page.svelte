@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
   import { commands, errText, type MissionView } from "$lib/ipc";
-  import Loading from "$lib/Loading.svelte";
+  import Loading from "$lib/components/Loading.svelte";
   import { data, owned, ensureMissions, ensureOwnership } from "$lib/data.svelte";
 
   // Missions through the blueprint lens. Hearth is BP-focused, so a mission's
