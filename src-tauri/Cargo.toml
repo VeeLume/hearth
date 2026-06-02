@@ -50,3 +50,13 @@ hearth-export.workspace = true
 # SC data — the loader (sc_loader.rs) uses install discovery + asset/datacore
 # parsing + the items/missions/crafting indices, all via the umbrella.
 sc-holotable.workspace = true
+
+# Live account-data fetch (sc-dossier) behind the `live-sync` feature. Default-on
+# so every build ships it; gated at runtime by a Settings toggle + one-time
+# consent (it talks to CIG's backend — ToS-grey). Path dep for now; switch to a
+# git tag before release.
+sc-dossier = { path = "../../sc-dossier", optional = true }
+
+[features]
+default = ["live-sync"]
+live-sync = ["dep:sc-dossier"]

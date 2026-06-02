@@ -16,6 +16,8 @@ pub enum AppError {
     NoInstall(String),
     #[error("identity scrape failed: {0}")]
     Identity(String),
+    #[error("live sync failed: {0}")]
+    LiveSync(String),
     #[error("internal error: {0}")]
     Internal(String),
 }

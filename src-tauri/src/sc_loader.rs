@@ -92,8 +92,8 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// (difficulty tiers split); diagnostic removed.)
 const HEARTH_CATALOG_COOK_VERSION: u32 = 17;
 
-const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
-const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
+pub const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
+pub const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
 
 /// The cooked SC reference data hearth caches per channel — the blueprint
 /// catalog and the mission browser data, both built from one `Datacore`
@@ -272,6 +272,35 @@ fn build_cooked(datacore: &Datacore, locale: &LocaleMap) -> CookedData {
 fn cache_dir_for(channel: Channel) -> Result<PathBuf> {
     let key = channel.install_dir_name().to_ascii_lowercase();
     Ok(crate::app_data_root().join("cache").join(key))
+}
+
+/// Which cache tier the next catalog load will *likely* use, for the loading
+/// message. Predicted from snapshot-file existence (cheap, no parse) — not a
+/// guarantee: a stale snapshot after an SC patch still falls through to a
+/// slower tier, which is why the UI pairs it with a "may take longer" note.
+#[derive(Debug, Clone, Copy, serde::Serialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum LoadTier {
+    /// Processed snapshot present — sub-second.
+    Processed,
+    /// Only the raw extract snapshot present — re-parse, medium.
+    Cache,
+    /// No snapshot — live `Data.p4k` parse, slow.
+    Raw,
+}
+
+/// Predict the load tier for `channel` by which snapshot files exist on disk.
+pub fn predict_tier(channel: Channel) -> LoadTier {
+    let Ok(dir) = cache_dir_for(channel) else {
+        return LoadTier::Raw;
+    };
+    if dir.join(CATALOG_SNAPSHOT_NAME).exists() {
+        LoadTier::Processed
+    } else if dir.join(EXTRACT_SNAPSHOT_NAME).exists() {
+        LoadTier::Cache
+    } else {
+        LoadTier::Raw
+    }
 }
 
 /// Try to load the cooked catalog directly. `None` on any failure — the

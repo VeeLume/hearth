@@ -744,6 +744,242 @@ async fn apply_log_import(
     Ok(ImportResult { accounts_touched, newly_owned, unresolved })
 }
 
+/// Predict which cache tier the catalog load will use, so the loading screen
+/// can name the path (and warn it may be slow). Fast — just checks snapshot
+/// files on disk; needs only discovery.
+#[tauri::command]
+#[specta::specta]
+async fn predicted_load_tier(
+    state: tauri::State<'_, AppState>,
+) -> Result<sc_loader::LoadTier, AppError> {
+    let channel = state.discovery().await?.channel;
+    Ok(sc_loader::predict_tier(channel))
+}
+
+// ── App settings + live blueprint sync ───────────────────────────────────────
+
+const LIVE_SYNC_ENABLED: &str = "live_sync_enabled";
+const LIVE_SYNC_CONSENTED: &str = "live_sync_consented";
+
+/// App-global preferences surfaced to the Settings page.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct AppSettings {
+    /// Whether this build was compiled with the `live-sync` feature at all.
+    live_sync_available: bool,
+    /// Runtime toggle — off by default; the user opts in.
+    live_sync_enabled: bool,
+    /// Whether the one-time ToS consent has been acknowledged.
+    live_sync_consented: bool,
+}
+
+/// Outcome of one live sync, for the Settings UI + the notification body.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+struct LiveSyncResult {
+    /// Blueprints the server reported owned.
+    total: u32,
+    /// Newly marked owned this sync.
+    added: u32,
+    /// Un-owned this sync (reconcile — the server no longer lists them).
+    removed: u32,
+    /// Server blueprint ids with no matching catalog entry.
+    unresolved: u32,
+}
+
+async fn read_bool_setting(db: &DbPool, key: &str, default: bool) -> Result<bool, AppError> {
+    Ok(hearth_storage::get_setting(db, key)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .map(|v| v == "true")
+        .unwrap_or(default))
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    Ok(AppSettings {
+        live_sync_available: cfg!(feature = "live-sync"),
+        live_sync_enabled: read_bool_setting(db, LIVE_SYNC_ENABLED, false).await?,
+        live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
+    })
+}
+
+/// Enable/disable live blueprint sync. Enabling records consent — the UI shows
+/// the one-time consent dialog before calling this with `enabled = true`.
+#[tauri::command]
+#[specta::specta]
+async fn set_live_sync(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    hearth_storage::set_setting(db, LIVE_SYNC_ENABLED, if enabled { "true" } else { "false" })
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    if enabled {
+        hearth_storage::set_setting(db, LIVE_SYNC_CONSENTED, "true")
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    }
+    Ok(AppSettings {
+        live_sync_available: cfg!(feature = "live-sync"),
+        live_sync_enabled: enabled,
+        live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
+    })
+}
+
+/// Fetch the authoritative owned-blueprint set from CIG's backend and reconcile
+/// the active account's prod-scope owned set to it. Emits a success/error
+/// notification regardless of caller.
+#[tauri::command]
+#[specta::specta]
+async fn live_sync_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<LiveSyncResult, AppError> {
+    #[cfg(feature = "live-sync")]
+    {
+        live_sync_impl(&app, state.inner()).await
+    }
+    #[cfg(not(feature = "live-sync"))]
+    {
+        let _ = (&app, &state);
+        Err(AppError::LiveSync(
+            "live blueprint sync is not available in this build".into(),
+        ))
+    }
+}
+
+/// Strip a guid to lowercase alphanumerics so server ids and catalog guids
+/// compare regardless of dash/case formatting.
+#[cfg(feature = "live-sync")]
+fn norm_guid(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+#[cfg(feature = "live-sync")]
+fn map_dossier_err(e: sc_dossier::Error) -> AppError {
+    use sc_dossier::Error as E;
+    let msg = match &e {
+        E::Mint { .. } => {
+            "Your RSI session looks stale — re-open the RSI launcher to refresh it, then sync again."
+                .to_string()
+        }
+        E::StoreNotFound(_) | E::MissingCredential { .. } => {
+            "No RSI launcher session found — open the RSI launcher and sign in.".to_string()
+        }
+        E::LauncherNotFound => "RSI Launcher not found on this machine.".to_string(),
+        other => format!("{other}"),
+    };
+    AppError::LiveSync(msg)
+}
+
+/// The fetch + reconcile, without notification (the caller notifies).
+#[cfg(feature = "live-sync")]
+async fn live_sync_run(state: &AppState) -> Result<LiveSyncResult, AppError> {
+    use std::collections::HashSet;
+    const UA: &str = concat!("Hearth/", env!("CARGO_PKG_VERSION"));
+
+    let dossier = sc_dossier::Dossier::from_launcher(UA)
+        .await
+        .map_err(map_dossier_err)?;
+    let server = dossier.owned_blueprints().await.map_err(map_dossier_err)?;
+
+    // Resolve server blueprint ids → catalog blueprint_record_guids.
+    let by_norm: HashMap<String, String> = state
+        .catalog()
+        .await?
+        .iter()
+        .map(|b| (norm_guid(&b.blueprint_record_guid), b.blueprint_record_guid.clone()))
+        .collect();
+    let mut target: HashSet<String> = HashSet::new();
+    let mut unresolved = 0u32;
+    for b in &server {
+        match by_norm.get(&norm_guid(&b.blueprint_id)) {
+            Some(guid) => {
+                target.insert(guid.clone());
+            }
+            None => unresolved += 1,
+        }
+    }
+
+    // Reconcile the active account's prod-scope owned set to `target`. Prod
+    // regardless of the launcher's current shard: the blueprint library is
+    // account-level (PTU shards wipe), the same stance as the Game.log import.
+    let account = state.active_account().await?;
+    let scope = Scope::new(Platform::Prod, account.id);
+    let db = state.db().await?;
+    let current: HashSet<String> = hearth_storage::list_owned(db, scope)
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        .into_iter()
+        .map(|o| o.blueprint_guid)
+        .collect();
+
+    let mut added = 0u32;
+    for guid in target.difference(&current) {
+        hearth_storage::add_owned(db, scope, guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+        added += 1;
+    }
+    let mut removed = 0u32;
+    for guid in current.difference(&target) {
+        if hearth_storage::remove_owned(db, scope, guid)
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?
+        {
+            removed += 1;
+        }
+    }
+
+    state.refresh_owned_export().await;
+    Ok(LiveSyncResult {
+        total: server.len() as u32,
+        added,
+        removed,
+        unresolved,
+    })
+}
+
+/// Run a live sync and emit a success/error notification either way. Used by
+/// both the `live_sync_now` command and the startup auto-sync.
+#[cfg(feature = "live-sync")]
+async fn live_sync_impl(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<LiveSyncResult, AppError> {
+    match live_sync_run(state).await {
+        Ok(r) => {
+            let mut body = format!("{} added, {} removed", r.added, r.removed);
+            if r.unresolved > 0 {
+                body.push_str(&format!(" · {} not in catalog", r.unresolved));
+            }
+            notify::notify(
+                app,
+                notify::Notification::success(format!(
+                    "Live sync: {} blueprint{} owned",
+                    r.total,
+                    plural(r.total as usize)
+                ))
+                .with_body(body)
+                .with_action("View catalog", "/"),
+            );
+            Ok(r)
+        }
+        Err(e) => {
+            notify::notify(
+                app,
+                notify::Notification::error("Live sync failed").with_body(e.to_string()),
+            );
+            Err(e)
+        }
+    }
+}
+
 // ── Debug commands ──────────────────────────────────────────────────────────
 
 /// Wipe the SC reference-data snapshot cache at
@@ -805,6 +1041,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         merge_accounts,
         scan_log_history,
         apply_log_import,
+        predicted_load_tier,
+        get_settings,
+        set_live_sync,
+        live_sync_now,
         wipe_sc_cache,
     ])
 }
@@ -1121,6 +1361,26 @@ fn spawn_sensor(handle: tauri::AppHandle) {
     });
 }
 
+/// On startup, if live sync is enabled, fetch + reconcile once after the
+/// catalog is warm. The result surfaces through the notification funnel (the
+/// only feedback channel here — there's no UI caller). Disabled / unreadable
+/// setting → silent no-op.
+#[cfg(feature = "live-sync")]
+fn spawn_live_sync(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        let Ok(db) = state.db().await else { return };
+        if !read_bool_setting(db, LIVE_SYNC_ENABLED, false).await.unwrap_or(false) {
+            return;
+        }
+        // The catalog is needed to resolve server ids → owned guids.
+        if state.catalog().await.is_err() {
+            return;
+        }
+        let _ = live_sync_impl(&handle, state.inner()).await;
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = ipc_builder();
@@ -1136,6 +1396,8 @@ pub fn run() {
         .setup(|app| {
             spawn_warmup(app.handle().clone());
             spawn_sensor(app.handle().clone());
+            #[cfg(feature = "live-sync")]
+            spawn_live_sync(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

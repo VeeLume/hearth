@@ -193,6 +193,52 @@ async applyLogImport(choices: ImportChoice[]) : Promise<Result<ImportResult, App
 }
 },
 /**
+ * Predict which cache tier the catalog load will use, so the loading screen
+ * can name the path (and warn it may be slow). Fast — just checks snapshot
+ * files on disk; needs only discovery.
+ */
+async predictedLoadTier() : Promise<Result<LoadTier, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("predicted_load_tier") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getSettings() : Promise<Result<AppSettings, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Enable/disable live blueprint sync. Enabling records consent — the UI shows
+ * the one-time consent dialog before calling this with `enabled = true`.
+ */
+async setLiveSync(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_live_sync", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch the authoritative owned-blueprint set from CIG's backend and reconcile
+ * the active account's prod-scope owned set to it. Emits a success/error
+ * notification regardless of caller.
+ */
+async liveSyncNow() : Promise<Result<LiveSyncResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("live_sync_now") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Wipe the SC reference-data snapshot cache at
  * `%APPDATA%/hearth/cache/` (every channel's `catalog.cook` +
  * `extract.snap`) and restart the app so the OnceCells in AppState
@@ -277,7 +323,23 @@ account_hint: number | null; created_at: string }
  */
 export type AccountWithAliases = { account: Account; aliases: string[] }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
-export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "Internal"; message: string }
+export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "LiveSync"; message: string } | { kind: "Internal"; message: string }
+/**
+ * App-global preferences surfaced to the Settings page.
+ */
+export type AppSettings = { 
+/**
+ * Whether this build was compiled with the `live-sync` feature at all.
+ */
+live_sync_available: boolean; 
+/**
+ * Runtime toggle — off by default; the user opts in.
+ */
+live_sync_enabled: boolean; 
+/**
+ * Whether the one-time ToS consent has been acknowledged.
+ */
+live_sync_consented: boolean }
 /**
  * One blueprint-pool reward on a mission: a weighted set the contract draws
  * from, with the chance the draw happens at all.
@@ -449,6 +511,45 @@ export type ItemRewardView = { entity_guid: string;
  * Resolved item display name; `None` if it didn't resolve.
  */
 name: string | null; amount: number }
+/**
+ * Outcome of one live sync, for the Settings UI + the notification body.
+ */
+export type LiveSyncResult = { 
+/**
+ * Blueprints the server reported owned.
+ */
+total: number; 
+/**
+ * Newly marked owned this sync.
+ */
+added: number; 
+/**
+ * Un-owned this sync (reconcile — the server no longer lists them).
+ */
+removed: number; 
+/**
+ * Server blueprint ids with no matching catalog entry.
+ */
+unresolved: number }
+/**
+ * Which cache tier the next catalog load will *likely* use, for the loading
+ * message. Predicted from snapshot-file existence (cheap, no parse) — not a
+ * guarantee: a stale snapshot after an SC patch still falls through to a
+ * slower tier, which is why the UI pairs it with a "may take longer" note.
+ */
+export type LoadTier = 
+/**
+ * Processed snapshot present — sub-second.
+ */
+"processed" | 
+/**
+ * Only the raw extract snapshot present — re-parse, medium.
+ */
+"cache" | 
+/**
+ * No snapshot — live `Data.p4k` parse, slow.
+ */
+"raw"
 /**
  * A reference to a mission that grants a blueprint — the lean shape the
  * wishlist's ⚐ fulfilment slot needs to answer "which missions grant this

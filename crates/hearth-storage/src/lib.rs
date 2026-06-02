@@ -566,6 +566,32 @@ fn row_to_wishlist(row: WishlistRow) -> Result<WishlistEntry> {
     })
 }
 
+// ── App settings (key/value, app-global) ─────────────────────────────────────
+
+/// Read an app-global setting by key. `None` if unset.
+pub async fn get_setting(pool: &DbPool, key: &str) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("reading setting {key}"))?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Upsert an app-global setting.
+pub async fn set_setting(pool: &DbPool, key: &str, value: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    .with_context(|| format!("writing setting {key}"))?;
+    Ok(())
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -88,3 +88,12 @@ CREATE TABLE outbox (
     last_attempt_at  TEXT,
     created_at       TEXT NOT NULL
 );
+
+
+-- App-global key/value preferences (NOT account-scoped). First users: the
+-- live-sync enable + one-time consent flags; later the profile-lookup privacy
+-- toggle and other preferences.
+CREATE TABLE settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
