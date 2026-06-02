@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { commands, errText, type BpView, type WishIntent } from "$lib/ipc";
-  import { categoryFor } from "$lib/categories";
+  import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import {
     type Craftable,
@@ -11,7 +11,7 @@
     collapseCraftables,
     formatCraftTime,
     formatScu,
-  } from "$lib/catalog";
+  } from "$lib/domain/catalog";
   import {
     data,
     owned,
