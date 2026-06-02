@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { commands, type AppSettings } from "$lib/bindings";
+  import AccountManager from "$lib/AccountManager.svelte";
+  import BlueprintImport from "$lib/BlueprintImport.svelte";
+
+  let tab = $state<"account" | "import" | "advanced">("account");
 
   let wiping = $state(false);
   let lastResult = $state<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -38,6 +42,12 @@
     if (r.status === "ok") settings = r.data;
     busy = false;
     syncNow();
+  }
+
+  async function setSensor(enabled: boolean) {
+    if (!settings) return;
+    const r = await commands.setSensor(enabled);
+    if (r.status === "ok") settings = r.data;
   }
 
   async function syncNow() {
@@ -78,29 +88,59 @@
 <header class="topbar">
   <div class="page-title">
     <h1>Settings</h1>
-    <span class="subtitle">App preferences + debug</span>
+    <span class="subtitle">Account, sync &amp; preferences</span>
   </div>
 </header>
 
-<section class="page">
-  <div class="card">
-    <h2>Coming soon</h2>
-    <p class="muted">
-      Account management (multi-RSI-account picker, profile re-verify),
-      platform / channel selection, and app preferences will live here.
-    </p>
-  </div>
+<div class="tabs">
+  <button class="tab" class:active={tab === "account"} onclick={() => (tab = "account")}>Account</button>
+  <button class="tab" class:active={tab === "import"} onclick={() => (tab = "import")}>Blueprint import</button>
+  <button class="tab" class:active={tab === "advanced"} onclick={() => (tab = "advanced")}>Advanced</button>
+</div>
 
-  {#if settings?.live_sync_available}
+<section class="page">
+  {#if tab === "account"}
+    <AccountManager />
+  {:else if tab === "import"}
+    <BlueprintImport />
+    {#if settings}
+      <div class="card">
+        <h2>Live game-log sensing</h2>
+        <p class="muted">
+          While you play, Hearth watches <code>Game.log</code> and marks blueprints
+          owned the moment you receive one (with a toast) — the same ToS-safe local
+          read as the import above, just continuous. Only catches blueprints
+          <em>received</em> during play.
+        </p>
+        <div class="row">
+          <button
+            class="switch"
+            class:on={settings.sensor_enabled}
+            role="switch"
+            aria-checked={settings.sensor_enabled}
+            aria-label="Live game-log sensing"
+            onclick={() => setSensor(!settings!.sensor_enabled)}
+          >
+            <span class="knob"></span>
+          </button>
+          <span class="switch-label">{settings.sensor_enabled ? "On" : "Off"}</span>
+        </div>
+      </div>
+    {/if}
+    {#if settings?.live_sync_available}
     <div class="card">
       <h2>Live blueprint sync <span class="adv">advanced</span></h2>
       <p class="muted">
-        Fetch your owned blueprints straight from CIG's servers using your RSI
-        launcher session, instead of only sensing them from the game log — more
-        complete and instant. This is an <strong>unofficial</strong> connection
-        to CIG's backend, <strong>against Star Citizen's Terms of Service</strong>.
-        Read-only; your account, your risk. When on, Hearth syncs at startup and
-        when you press <em>Sync now</em> — never in the background.
+        Fetches your <strong>complete</strong> blueprint library straight from your
+        RSI account on CIG's servers — the authoritative list, including
+        default-unlocked blueprints the log import can't see. Each sync
+        <strong>reconciles</strong> your owned set to match your account exactly:
+        it adds what's missing <em>and removes what you no longer have</em>.
+        <br /><strong>Limitation:</strong> this is an
+        <strong>unofficial, read-only</strong> connection to CIG's backend,
+        <strong>against Star Citizen's Terms of Service</strong>. It only ever
+        touches your own account, but you use it at your own risk. Syncs at
+        startup and when you press <em>Sync now</em> — never in the background.
       </p>
       <div class="row">
         <button
@@ -125,16 +165,15 @@
         </div>
       {/if}
     </div>
-  {/if}
-
+    {/if}
+  {:else if tab === "advanced"}
   <div class="card">
     <h2>Debug · SC reference cache</h2>
     <p class="muted">
       Wipe the snapshot cache at <code>%APPDATA%/hearth/cache/</code>
       (every channel's <code>catalog.cook</code> +
       <code>extract.snap</code>). Hearth will restart and rebuild from
-      your live <code>Data.p4k</code> — first launch takes ~30 s,
-      subsequent loads are sub-second again. Personal data (owned
+      your live <code>Data.p4k</code>. Personal data (owned
       blueprints, accounts) is untouched.
     </p>
     <div class="row">
@@ -146,6 +185,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 </section>
 
 {#if showConsent}
@@ -170,8 +210,30 @@
     display: flex;
     align-items: center;
     gap: 1.5rem;
-    padding: 1.1rem 1.6rem;
+    padding: 1.1rem 1.6rem 0.6rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.2rem;
+    padding: 0 1.6rem;
     border-bottom: 1px solid var(--line);
+  }
+  .tab {
+    padding: 0.5rem 0.85rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: color 90ms, border-color 90ms;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--ember);
+    border-bottom-color: var(--ember);
   }
   .page-title {
     display: flex;
@@ -194,7 +256,6 @@
     display: flex;
     flex-direction: column;
     gap: 1.2rem;
-    max-width: 760px;
   }
   .card {
     background: var(--panel);

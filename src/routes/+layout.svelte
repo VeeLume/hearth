@@ -19,8 +19,6 @@
 
   let scope = $state<ActiveScope | null>(null);
   let scopeError = $state<string | null>(null);
-  let verifying = $state(false);
-  let verifyMessage = $state<string | null>(null);
 
   // Notification center (sidebar bell). Opening it marks everything read so
   // the bell badge clears; the per-session log stays in the panel.
@@ -68,19 +66,6 @@
     }
   });
 
-  async function verify() {
-    if (!scope) return;
-    verifying = true;
-    verifyMessage = null;
-    const result = await commands.verifyAccount(scope.account.id);
-    if (result.status === "ok") {
-      scope = { ...scope, account: result.data };
-      verifyMessage = `verified · #${result.data.citizen_record}`;
-    } else {
-      verifyMessage = `${result.error.kind}: ${result.error.message}`;
-    }
-    verifying = false;
-  }
 
   const platformLabel = (p: ActiveScope["platform"]) => (p === "prod" ? "PU" : "PTU");
   const isActive = (href: string) =>
@@ -153,12 +138,6 @@
             </span>
           </div>
           <a class="cog" class:active={isActive("/settings")} href="/settings" title="Settings" aria-label="Settings">⚙</a>
-        </div>
-        <div class="account-actions">
-          <button class="verify-btn" onclick={verify} disabled={verifying}>
-            {verifying ? "Verifying…" : scope.account.last_verified ? "Re-verify" : "Verify"}
-          </button>
-          {#if verifyMessage}<span class="verify-msg">{verifyMessage}</span>{/if}
         </div>
       {:else if scopeError}
         <div class="account-handle">
@@ -354,34 +333,6 @@
     background: var(--ember-glow);
     color: var(--ember);
   }
-  .account-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.5rem 0.2rem;
-  }
-  .verify-btn {
-    font-size: 0.7rem;
-    padding: 0.2rem 0.55rem;
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    cursor: pointer;
-  }
-  .verify-btn:hover:not(:disabled) {
-    color: var(--text);
-    border-color: var(--ember-dim);
-  }
-  .verify-btn:disabled {
-    opacity: 0.5;
-    cursor: progress;
-  }
-  .verify-msg {
-    font-size: 0.68rem;
-    color: var(--faint);
-  }
-
   main {
     display: flex;
     flex-direction: column;

@@ -760,6 +760,7 @@ async fn predicted_load_tier(
 
 const LIVE_SYNC_ENABLED: &str = "live_sync_enabled";
 const LIVE_SYNC_CONSENTED: &str = "live_sync_consented";
+const SENSOR_ENABLED: &str = "sensor_enabled";
 
 /// App-global preferences surfaced to the Settings page.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -770,6 +771,8 @@ struct AppSettings {
     live_sync_enabled: bool,
     /// Whether the one-time ToS consent has been acknowledged.
     live_sync_consented: bool,
+    /// Live Game.log sensing (auto-mark BPs received during play). Default on.
+    sensor_enabled: bool,
 }
 
 /// Outcome of one live sync, for the Settings UI + the notification body.
@@ -793,15 +796,21 @@ async fn read_bool_setting(db: &DbPool, key: &str, default: bool) -> Result<bool
         .unwrap_or(default))
 }
 
-#[tauri::command]
-#[specta::specta]
-async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, AppError> {
-    let db = state.db().await?;
+/// Build the current settings snapshot. One place so every setter returns a
+/// consistent shape.
+async fn read_settings(db: &DbPool) -> Result<AppSettings, AppError> {
     Ok(AppSettings {
         live_sync_available: cfg!(feature = "live-sync"),
         live_sync_enabled: read_bool_setting(db, LIVE_SYNC_ENABLED, false).await?,
         live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
+        sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, true).await?,
     })
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, AppError> {
+    read_settings(state.db().await?).await
 }
 
 /// Enable/disable live blueprint sync. Enabling records consent — the UI shows
@@ -821,11 +830,22 @@ async fn set_live_sync(
             .await
             .map_err(|e| AppError::Storage(format!("{e:#}")))?;
     }
-    Ok(AppSettings {
-        live_sync_available: cfg!(feature = "live-sync"),
-        live_sync_enabled: enabled,
-        live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
-    })
+    read_settings(db).await
+}
+
+/// Enable/disable live Game.log sensing. Takes effect within one poll interval
+/// (the sensor loop checks this each tick) — no restart needed.
+#[tauri::command]
+#[specta::specta]
+async fn set_sensor(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    hearth_storage::set_setting(db, SENSOR_ENABLED, if enabled { "true" } else { "false" })
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    read_settings(db).await
 }
 
 /// Fetch the authoritative owned-blueprint set from CIG's backend and reconcile
@@ -1044,6 +1064,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         predicted_load_tier,
         get_settings,
         set_live_sync,
+        set_sensor,
         live_sync_now,
         wipe_sc_cache,
     ])
@@ -1233,6 +1254,17 @@ fn spawn_sensor(handle: tauri::AppHandle) {
 
         loop {
             ticker.tick().await;
+            // Gated by the user setting (default on), checked each tick so the
+            // Settings toggle takes effect within one interval without a restart.
+            // While off we skip the poll entirely; re-enabling backfills whatever
+            // was appended in the meantime.
+            let enabled = match state.db().await {
+                Ok(db) => read_bool_setting(db, SENSOR_ENABLED, true).await.unwrap_or(true),
+                Err(_) => true,
+            };
+            if !enabled {
+                continue;
+            }
             let events = match tailer.poll() {
                 Ok(e) => e,
                 Err(e) => {

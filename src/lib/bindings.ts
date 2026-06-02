@@ -226,6 +226,18 @@ async setLiveSync(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
 }
 },
 /**
+ * Enable/disable live Game.log sensing. Takes effect within one poll interval
+ * (the sensor loop checks this each tick) — no restart needed.
+ */
+async setSensor(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_sensor", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch the authoritative owned-blueprint set from CIG's backend and reconcile
  * the active account's prod-scope owned set to it. Emits a success/error
  * notification regardless of caller.
@@ -339,7 +351,11 @@ live_sync_enabled: boolean;
 /**
  * Whether the one-time ToS consent has been acknowledged.
  */
-live_sync_consented: boolean }
+live_sync_consented: boolean; 
+/**
+ * Live Game.log sensing (auto-mark BPs received during play). Default on.
+ */
+sensor_enabled: boolean }
 /**
  * One blueprint-pool reward on a mission: a weighted set the contract draws
  * from, with the chance the draw happens at all.

@@ -13,7 +13,6 @@ export const primaryNav: NavItem[] = [
   { href: "/", label: "Catalog", icon: "▣" },
   { href: "/missions", label: "Missions", icon: "◆" },
   { href: "/wishlist", label: "Wishlist", icon: "♥" },
-  { href: "/accounts", label: "Accounts", icon: "◉" },
 ];
 
 export const futureNav: NavItem[] = [

@@ -54,3 +54,27 @@ input {
   font: inherit;
   color: inherit;
 }
+
+/* Dark scrollbars to match the theme — the WebView default is light. The
+ * transparent border + content-box clip renders the thumb as an inset pill
+ * regardless of the element's background. */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
