@@ -122,6 +122,9 @@ async listAccounts() : Promise<Result<Account[], AppError>> {
  * Scrape `/citizens/<handle>` for the given account and write the
  * immutable anchors (`citizen_record`, `enlisted`) back to the row.
  * Refreshes `last_verified`. Returns the up-to-date `Account`.
+ * 
+ * No-ops with an error when Hearth is in offline mode (the master online
+ * switch) — the UI hides the button, but this guards the network call regardless.
  */
 async verifyAccount(accountId: RecordId) : Promise<Result<Account, AppError>> {
     try {
@@ -232,6 +235,19 @@ async setLiveSync(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
 async setSensor(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_sensor", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Master online switch. Off → Hearth makes no network calls at all: profile
+ * lookups are blocked (re-verify errors, rename detection falls back to manual)
+ * and live game-service sync stays inert even if it's enabled.
+ */
+async setOnline(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_online", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -371,7 +387,12 @@ sensor_enabled: boolean;
 /**
  * Whether the first-launch onboarding has been completed/skipped.
  */
-onboarding_completed: boolean }
+onboarding_completed: boolean; 
+/**
+ * Master online switch (default on). Off → fully offline: no profile
+ * lookups (identity / rename detection) and no live game-service sync.
+ */
+online_enabled: boolean }
 /**
  * One blueprint-pool reward on a mission: a weighted set the contract draws
  * from, with the chance the draw happens at all.

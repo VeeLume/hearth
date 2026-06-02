@@ -143,11 +143,17 @@
         touches your own account, but you use it at your own risk. Syncs at
         startup and when you press <em>Sync now</em> — never in the background.
       </p>
+      {#if !settings.online_enabled}
+        <p class="offline-note">
+          Offline mode is on (<strong>Account</strong> tab → Online features) —
+          live sync is paused.
+        </p>
+      {/if}
       <div class="row">
         <button
           class="switch"
           class:on={settings.live_sync_enabled}
-          disabled={busy}
+          disabled={busy || !settings.online_enabled}
           role="switch"
           aria-checked={settings.live_sync_enabled}
           aria-label="Live blueprint sync"
@@ -159,7 +165,7 @@
       </div>
       {#if settings.live_sync_enabled}
         <div class="row">
-          <button class="action-btn" onclick={syncNow} disabled={syncing}>
+          <button class="action-btn" onclick={syncNow} disabled={syncing || !settings.online_enabled}>
             {syncing ? "Syncing…" : "Sync now"}
           </button>
           {#if lastSync}<span class="result ok">{lastSync}</span>{/if}
@@ -324,6 +330,11 @@
   }
   .result.err {
     color: var(--bad);
+  }
+  .offline-note {
+    margin: 0.7rem 0 0;
+    font-size: 0.8rem;
+    color: var(--ember);
   }
 
   /* ── Live blueprint sync ── */

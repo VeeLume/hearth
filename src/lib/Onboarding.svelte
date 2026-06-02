@@ -14,6 +14,7 @@
   let verifying = $state(false);
   let settings = $state<AppSettings | null>(null);
   let showConsent = $state(false); // inline ToS consent for live sync
+  const onlineEnabled = $derived(settings?.online_enabled ?? true);
 
   onMount(async () => {
     const [s, set] = await Promise.all([commands.activeScope(), commands.getSettings()]);
@@ -23,8 +24,9 @@
   });
 
   // Best-effort: capture the immutable RSI anchors (citizen record) by scraping
-  // the public profile when the user reaches the account step. Silent on
-  // failure — onboarding never blocks on it.
+  // the public profile. Only ever called when the user leaves the account step
+  // with online features still enabled, so the toggle is seen and changeable
+  // BEFORE any network call. Silent on failure — never blocks.
   async function captureAnchor() {
     if (!scope || verifying || scope.account.last_verified) return;
     verifying = true;
@@ -34,11 +36,19 @@
   }
 
   function next() {
+    // Fire the profile scrape only on leaving the account step, and only if the
+    // user kept online features on — never before they've had the choice.
+    if (step === 1 && onlineEnabled) captureAnchor();
     step += 1;
-    if (step === 1) captureAnchor();
   }
   function back() {
     step = Math.max(0, step - 1);
+  }
+
+  async function setOnline(enabled: boolean) {
+    if (!settings) return;
+    const r = await commands.setOnline(enabled);
+    if (r.status === "ok") settings = r.data;
   }
 
   async function setSensor(enabled: boolean) {
@@ -105,6 +115,30 @@
           Hearth read this from your RSI launcher. Renamed before, or play on more
           than one account? You can manage that in <strong>Settings → Account</strong>.
         </p>
+        {#if settings}
+          <div class="opt privacy">
+            <div class="opt-head">
+              <span class="opt-title">Online features</span>
+              <button
+                class="switch"
+                class:on={onlineEnabled}
+                role="switch"
+                aria-checked={onlineEnabled}
+                aria-label="Online features"
+                onclick={() => setOnline(!onlineEnabled)}
+              >
+                <span class="knob"></span>
+              </button>
+            </div>
+            <p class="muted">
+              Lets Hearth read your <strong>public</strong> RSI profile when you
+              continue (to confirm this is you and detect handle renames), and
+              run live blueprint sync if you turn it on next. Switch off for
+              <strong>fully offline</strong> — local game-log tracking still
+              works, and you can change this anytime in Settings.
+            </p>
+          </div>
+        {/if}
       {:else if scopeError}
         <p class="muted">
           No Star Citizen install detected yet. Hearth works best with SC installed
@@ -148,6 +182,7 @@
               <button
                 class="switch"
                 class:on={settings.live_sync_enabled}
+                disabled={!onlineEnabled}
                 role="switch"
                 aria-checked={settings.live_sync_enabled}
                 aria-label="Live blueprint sync"
@@ -159,7 +194,9 @@
             <p class="muted">
               Pulls your <em>complete</em> library straight from your CIG account.
               Unofficial, read-only, <strong>against SC's Terms of Service</strong>
-              — your own risk.
+              — your own risk.{#if !onlineEnabled}
+                <span class="off-hint"> Turn on Online features above to use this.</span>
+              {/if}
             </p>
             {#if showConsent}
               <div class="consent">
@@ -419,6 +456,13 @@
   .switch.on .knob {
     transform: translateX(1rem);
     background: var(--ember);
+  }
+  .switch:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .off-hint {
+    color: var(--ember);
   }
 
   .dots {

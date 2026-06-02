@@ -649,6 +649,9 @@ async fn list_accounts(state: tauri::State<'_, AppState>) -> Result<Vec<Account>
 /// Scrape `/citizens/<handle>` for the given account and write the
 /// immutable anchors (`citizen_record`, `enlisted`) back to the row.
 /// Refreshes `last_verified`. Returns the up-to-date `Account`.
+///
+/// No-ops with an error when Hearth is in offline mode (the master online
+/// switch) — the UI hides the button, but this guards the network call regardless.
 #[tauri::command]
 #[specta::specta]
 async fn verify_account(
@@ -656,6 +659,11 @@ async fn verify_account(
     account_id: RecordId,
 ) -> Result<Account, AppError> {
     let db = state.db().await?;
+    if !read_bool_setting(db, ONLINE_ENABLED, true).await? {
+        return Err(AppError::Identity(
+            "Hearth is in offline mode (Settings → Account → Online features)".into(),
+        ));
+    }
     let account = hearth_storage::get_account(db, account_id)
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))?
@@ -904,6 +912,11 @@ const ONBOARDING_COMPLETED: &str = "onboarding_completed";
 /// Last launcher handle we ran against — the steady-state guard for the startup
 /// rename check (a network scrape only happens when this changes).
 const LAST_ACTIVE_HANDLE: &str = "last_active_handle";
+/// Master online switch (default on). When off, Hearth makes **no** network
+/// calls: no public-RSI-profile lookups (identity / rename detection) and no
+/// live game-service sync — fully offline. Live sync's own enable flag is
+/// preserved and simply inert while this is off.
+const ONLINE_ENABLED: &str = "online_enabled";
 
 /// App-global preferences surfaced to the Settings page.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -918,6 +931,9 @@ struct AppSettings {
     sensor_enabled: bool,
     /// Whether the first-launch onboarding has been completed/skipped.
     onboarding_completed: bool,
+    /// Master online switch (default on). Off → fully offline: no profile
+    /// lookups (identity / rename detection) and no live game-service sync.
+    online_enabled: bool,
 }
 
 /// Outcome of one live sync, for the Settings UI + the notification body.
@@ -950,6 +966,7 @@ async fn read_settings(db: &DbPool) -> Result<AppSettings, AppError> {
         live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
         sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, true).await?,
         onboarding_completed: read_bool_setting(db, ONBOARDING_COMPLETED, false).await?,
+        online_enabled: read_bool_setting(db, ONLINE_ENABLED, true).await?,
     })
 }
 
@@ -994,6 +1011,22 @@ async fn set_sensor(
     read_settings(db).await
 }
 
+/// Master online switch. Off → Hearth makes no network calls at all: profile
+/// lookups are blocked (re-verify errors, rename detection falls back to manual)
+/// and live game-service sync stays inert even if it's enabled.
+#[tauri::command]
+#[specta::specta]
+async fn set_online(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    hearth_storage::set_setting(db, ONLINE_ENABLED, if enabled { "true" } else { "false" })
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    read_settings(db).await
+}
+
 /// Mark the first-launch onboarding as completed (or skipped) so it doesn't
 /// show again. Re-running it from Settings doesn't clear this.
 #[tauri::command]
@@ -1019,6 +1052,13 @@ async fn live_sync_now(
 ) -> Result<LiveSyncResult, AppError> {
     #[cfg(feature = "live-sync")]
     {
+        // Offline mode gates live sync too (the master switch) — even if live
+        // sync itself is enabled. The UI greys the controls; this guards them.
+        if !read_bool_setting(state.db().await?, ONLINE_ENABLED, true).await? {
+            return Err(AppError::LiveSync(
+                "Hearth is in offline mode (Settings → Account → Online features)".into(),
+            ));
+        }
         live_sync_impl(&app, state.inner()).await
     }
     #[cfg(not(feature = "live-sync"))]
@@ -1264,6 +1304,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         get_settings,
         set_live_sync,
         set_sensor,
+        set_online,
         set_onboarding_complete,
         live_sync_now,
         wipe_sc_cache,
@@ -1700,6 +1741,16 @@ async fn rename_check(app: &tauri::AppHandle) -> Result<(), AppError> {
         return Ok(());
     }
 
+    // Offline mode: with online features off we can't anchor-confirm, so don't
+    // touch the network — fall back to the same manual hint as a failed scrape.
+    if !read_bool_setting(db, ONLINE_ENABLED, true).await? {
+        if others.len() == 1 {
+            notify_possible_rename(app, &others[0].handle, &current_handle);
+        }
+        remember_active_handle(db, &current_handle).await;
+        return Ok(());
+    }
+
     // Scrape the public profile for the immutable citizen record.
     let info = match identity::fetch_profile(&current_handle).await {
         Ok(info) => info,
@@ -1792,6 +1843,11 @@ fn spawn_live_sync(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = handle.state::<AppState>();
         let Ok(db) = state.db().await else { return };
+        // Offline mode (master switch) suppresses startup sync even when live
+        // sync is enabled.
+        if !read_bool_setting(db, ONLINE_ENABLED, true).await.unwrap_or(true) {
+            return;
+        }
         if !read_bool_setting(db, LIVE_SYNC_ENABLED, false).await.unwrap_or(false) {
             return;
         }
