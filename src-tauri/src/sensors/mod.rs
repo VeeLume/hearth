@@ -65,7 +65,12 @@ pub struct SessionSummary {
 pub fn summarize_session<R: BufRead>(reader: R) -> SessionSummary {
     let mut summary = SessionSummary::default();
     let mut seen = HashSet::new();
-    for line in reader.lines().map_while(Result::ok) {
+    // split(b'\n') + lossy decode, NOT lines(): Game.log has stray non-UTF-8
+    // bytes, and lines().map_while(Result::ok) would truncate the scan at the
+    // first one — dropping every receipt below it (the real cause of import
+    // misses; blueprint lines sit deep in the file, well after such bytes).
+    for bytes in reader.split(b'\n').map_while(Result::ok) {
+        let line = String::from_utf8_lossy(&bytes);
         match parse::parse_line(&line) {
             Some(SensedEvent::SessionPlatform(p)) => summary.platform = Some(p),
             Some(SensedEvent::SessionHandle(h)) => summary.handle = Some(h),
@@ -82,12 +87,20 @@ pub fn summarize_session<R: BufRead>(reader: R) -> SessionSummary {
 }
 
 /// Parse every line of a reader into the events Hearth tracks, in order.
-/// Lines that fail to read (mid-rotation truncation, etc.) are skipped.
+///
+/// Splits on raw `\n` and lossy-decodes each line, NOT `lines()` — Game.log
+/// contains stray non-UTF-8 bytes (Latin-1 chars like `ü`, occasional binary),
+/// and `lines().map_while(Result::ok)` would halt the whole iterator at the
+/// first such line, silently dropping every later receipt. `split(b'\n')` only
+/// errors on real I/O faults, so a bad byte just garbles one line.
 pub fn scan_reader<R: BufRead>(reader: R) -> Vec<SensedEvent> {
     reader
-        .lines()
+        .split(b'\n')
         .map_while(Result::ok)
-        .filter_map(|line| parse::parse_line(&line))
+        .filter_map(|bytes| {
+            let line = String::from_utf8_lossy(&bytes);
+            parse::parse_line(&line)
+        })
         .collect()
 }
 
@@ -190,6 +203,28 @@ mod tests {
         assert_eq!(s.account_hint, Some(1155333));
         // "Foo" received twice → recorded once; order preserved.
         assert_eq!(s.blueprint_names, vec!["Foo".to_string(), "Bar".to_string()]);
+    }
+
+    #[test]
+    fn summarize_survives_non_utf8_lines() {
+        // A stray non-UTF-8 byte (Latin-1 'ü' = 0xFC) on a line BEFORE the
+        // receipt must NOT truncate the scan — the regression that silently
+        // dropped deep blueprint receipts across many backups.
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"<x> [Cmdline* ] --envtag='PUB'\n");
+        bytes.extend_from_slice(b"<x> [Notice] <Legacy login response> Handle[VeeLume] [Login]\n");
+        bytes.extend_from_slice(b"<x> chat: Regel ist ung\xFCltig\n"); // invalid UTF-8
+        bytes.extend_from_slice(
+            b"<x> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo Bar: \" [1] to queue. [Team]\n",
+        );
+        let s = summarize_session(Cursor::new(bytes));
+        assert_eq!(s.platform, Some(Platform::Prod));
+        assert_eq!(s.handle.as_deref(), Some("VeeLume"));
+        assert_eq!(
+            s.blueprint_names,
+            vec!["Foo Bar".to_string()],
+            "receipt after a non-UTF-8 line must still be captured"
+        );
     }
 
     #[test]
