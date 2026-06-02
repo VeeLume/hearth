@@ -12,7 +12,11 @@
     ensureOwnership,
     ensureMissions,
     ensureGrantedBy,
+    listenForOwnershipChanges,
   } from "$lib/data.svelte";
+  import Onboarding from "$lib/Onboarding.svelte";
+  import { onboarding, maybeStart } from "$lib/onboardingStore.svelte";
+  import { maybeStartupImport } from "$lib/importStore.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -24,6 +28,7 @@
   // the bell badge clears; the per-session log stays in the panel.
   let centerOpen = $state(false);
   let unlisten: UnlistenFn | undefined;
+  let unlistenOwnership: UnlistenFn | undefined;
 
   function toggleCenter() {
     centerOpen = !centerOpen;
@@ -32,12 +37,16 @@
 
   onDestroy(() => {
     unlisten?.();
+    unlistenOwnership?.();
   });
 
   onMount(async () => {
     // The single funnel: every backend `notify` event lands in the store,
     // which drives both the toast stack and the notification center.
     unlisten = await listenForNotifications();
+    // Refresh the shared owned set whenever the backend changes it behind our
+    // back (live sync reconcile, sensor auto-mark).
+    unlistenOwnership = await listenForOwnershipChanges();
 
     // Warm the shared data store in the background (one backend load serves
     // all of these) so every page renders instantly when reached — no
@@ -46,6 +55,13 @@
     ensureOwnership();
     ensureMissions();
     ensureGrantedBy();
+
+    // Show first-launch onboarding if it hasn't been completed.
+    maybeStart();
+
+    // If sensing is on, quietly catch up on blueprints logged while the app
+    // was closed (now rotated into logbackups/). Fast via the per-file cache.
+    maybeStartupImport();
 
     // Remove the pre-hydration splash from app.html now that Svelte
     // is in control. Fades out via the .hidden class for ~200ms.
@@ -164,6 +180,10 @@
 
 <NotificationCenter open={centerOpen} onClose={() => (centerOpen = false)} />
 <Toasts />
+
+{#if onboarding.open}
+  <Onboarding />
+{/if}
 
 <style>
   .app {

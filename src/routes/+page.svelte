@@ -20,7 +20,6 @@
     wishSet,
     ensureBlueprints,
     ensureOwnership,
-    refreshOwnership,
   } from "$lib/data.svelte";
 
   // Blueprints + ownership live in the shared store ($lib/data.svelte) so they
@@ -48,8 +47,9 @@
   async function syncNow() {
     if (syncing) return;
     syncing = true;
-    const r = await commands.liveSyncNow();
-    if (r.status === "ok") await refreshOwnership();
+    // Result + errors surface via notifications; the backend's ownership-changed
+    // event refreshes the owned set (so all sync paths behave the same).
+    await commands.liveSyncNow();
     syncing = false;
   }
 

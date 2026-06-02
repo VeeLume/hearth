@@ -3,6 +3,7 @@
   import { commands, type AppSettings } from "$lib/bindings";
   import AccountManager from "$lib/AccountManager.svelte";
   import BlueprintImport from "$lib/BlueprintImport.svelte";
+  import { openOnboarding } from "$lib/onboardingStore.svelte";
 
   let tab = $state<"account" | "import" | "advanced">("account");
 
@@ -167,6 +168,13 @@
     </div>
     {/if}
   {:else if tab === "advanced"}
+  <div class="card">
+    <h2>First-launch setup</h2>
+    <p class="muted">Re-run the welcome walkthrough (account confirmation + tracking setup).</p>
+    <div class="row">
+      <button class="action-btn" onclick={openOnboarding}>Re-run onboarding</button>
+    </div>
+  </div>
   <div class="card">
     <h2>Debug · SC reference cache</h2>
     <p class="muted">

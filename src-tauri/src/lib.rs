@@ -287,15 +287,98 @@ fn session_log_files(channel_dir: &std::path::Path) -> Vec<PathBuf> {
     files
 }
 
-/// Read + summarise every session log (blocking — hundreds of files).
+/// One cached per-file scan: the file's mtime + length (the cache key) and the
+/// summary it produced. `logbackups/` files are immutable once rotated, so a
+/// matching mtime+len means the cached summary is still valid.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedScan {
+    mtime: i64,
+    len: u64,
+    summary: sensors::SessionSummary,
+}
+
+/// Per-file scan cache (`<file path> → cached summary`). Lets a re-scan reuse
+/// every unchanged backup and only parse new ones — so the first import pays the
+/// full cost once; later runs are near-instant. Regenerable; a decode failure
+/// just falls back to a full scan.
+fn import_cache_path() -> PathBuf {
+    app_data_root().join("import-scan-cache.json")
+}
+
+fn load_scan_cache() -> HashMap<String, CachedScan> {
+    std::fs::read(import_cache_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_scan_cache(cache: &HashMap<String, CachedScan>) {
+    let path = import_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec(cache) {
+        let _ = std::fs::write(&path, bytes); // best-effort
+    }
+}
+
+fn file_mtime_secs(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Read + summarise every session log (blocking — hundreds of files). Parses
+/// files in parallel across cores, reusing cached summaries for unchanged
+/// backups; the live `Game.log` is always re-parsed (and never cached). Rebuilds
+/// + persists the cache from this scan, which prunes deleted backups.
 fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::SessionSummary> {
-    session_log_files(channel_dir)
-        .into_iter()
+    use rayon::prelude::*;
+
+    let files = session_log_files(channel_dir);
+    let live = sensors::game_log_path(channel_dir);
+    let cache = load_scan_cache();
+
+    // Per file: (summary, optional (key, entry) to persist). `None` entry = the
+    // live Game.log (don't cache). A cache hit re-emits the existing entry.
+    let scanned: Vec<(sensors::SessionSummary, Option<(String, CachedScan)>)> = files
+        .par_iter()
         .filter_map(|path| {
-            let file = std::fs::File::open(&path).ok()?;
-            Some(sensors::summarize_session(std::io::BufReader::new(file)))
+            let meta = std::fs::metadata(path).ok()?;
+            let len = meta.len();
+            let mtime = file_mtime_secs(&meta);
+            let key = path.to_string_lossy().into_owned();
+            let is_live = path.as_path() == live.as_path();
+
+            if !is_live
+                && let Some(c) = cache.get(&key)
+                && c.mtime == mtime
+                && c.len == len
+            {
+                // Hit — reuse the cached summary, keep caching it.
+                let summary = c.summary.clone();
+                return Some((summary.clone(), Some((key, CachedScan { mtime, len, summary }))));
+            }
+
+            let file = std::fs::File::open(path).ok()?;
+            let summary = sensors::summarize_session(std::io::BufReader::new(file));
+            let entry = (!is_live).then(|| (key, CachedScan { mtime, len, summary: summary.clone() }));
+            Some((summary, entry))
         })
-        .collect()
+        .collect();
+
+    let mut new_cache = HashMap::new();
+    let mut summaries = Vec::with_capacity(scanned.len());
+    for (summary, entry) in scanned {
+        if let Some((key, c)) = entry {
+            new_cache.insert(key, c);
+        }
+        summaries.push(summary);
+    }
+    save_scan_cache(&new_cache);
+    summaries
 }
 
 /// Group prod-only session summaries into identities, keyed by numeric
@@ -761,6 +844,7 @@ async fn predicted_load_tier(
 const LIVE_SYNC_ENABLED: &str = "live_sync_enabled";
 const LIVE_SYNC_CONSENTED: &str = "live_sync_consented";
 const SENSOR_ENABLED: &str = "sensor_enabled";
+const ONBOARDING_COMPLETED: &str = "onboarding_completed";
 
 /// App-global preferences surfaced to the Settings page.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -773,6 +857,8 @@ struct AppSettings {
     live_sync_consented: bool,
     /// Live Game.log sensing (auto-mark BPs received during play). Default on.
     sensor_enabled: bool,
+    /// Whether the first-launch onboarding has been completed/skipped.
+    onboarding_completed: bool,
 }
 
 /// Outcome of one live sync, for the Settings UI + the notification body.
@@ -804,6 +890,7 @@ async fn read_settings(db: &DbPool) -> Result<AppSettings, AppError> {
         live_sync_enabled: read_bool_setting(db, LIVE_SYNC_ENABLED, false).await?,
         live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
         sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, true).await?,
+        onboarding_completed: read_bool_setting(db, ONBOARDING_COMPLETED, false).await?,
     })
 }
 
@@ -843,6 +930,20 @@ async fn set_sensor(
 ) -> Result<AppSettings, AppError> {
     let db = state.db().await?;
     hearth_storage::set_setting(db, SENSOR_ENABLED, if enabled { "true" } else { "false" })
+        .await
+        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    read_settings(db).await
+}
+
+/// Mark the first-launch onboarding as completed (or skipped) so it doesn't
+/// show again. Re-running it from Settings doesn't clear this.
+#[tauri::command]
+#[specta::specta]
+async fn set_onboarding_complete(
+    state: tauri::State<'_, AppState>,
+) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    hearth_storage::set_setting(db, ONBOARDING_COMPLETED, "true")
         .await
         .map_err(|e| AppError::Storage(format!("{e:#}")))?;
     read_settings(db).await
@@ -908,22 +1009,35 @@ async fn live_sync_run(state: &AppState) -> Result<LiveSyncResult, AppError> {
         .map_err(map_dossier_err)?;
     let server = dossier.owned_blueprints().await.map_err(map_dossier_err)?;
 
-    // Resolve server blueprint ids → catalog blueprint_record_guids.
-    let by_norm: HashMap<String, String> = state
-        .catalog()
-        .await?
-        .iter()
-        .map(|b| (norm_guid(&b.blueprint_record_guid), b.blueprint_record_guid.clone()))
-        .collect();
+    // Resolve server blueprint ids → catalog blueprint_record_guids (+ keep the
+    // display name by normalized guid for diagnostics).
+    let mut by_norm: HashMap<String, String> = HashMap::new();
+    let mut name_by_norm: HashMap<String, Option<String>> = HashMap::new();
+    for b in state.catalog().await?.iter() {
+        let n = norm_guid(&b.blueprint_record_guid);
+        name_by_norm.insert(n.clone(), b.display_name.clone());
+        by_norm.insert(n, b.blueprint_record_guid.clone());
+    }
     let mut target: HashSet<String> = HashSet::new();
-    let mut unresolved = 0u32;
+    let mut unresolved: Vec<&sc_dossier::Blueprint> = Vec::new();
     for b in &server {
         match by_norm.get(&norm_guid(&b.blueprint_id)) {
             Some(guid) => {
                 target.insert(guid.clone());
             }
-            None => unresolved += 1,
+            None => unresolved.push(b),
         }
+    }
+    // Diagnostic: name the server blueprints with no catalog match so we can
+    // check what they are (e.g. a post-patch re-GUID, or outside the catalog's
+    // Creation-process filter).
+    for b in &unresolved {
+        tracing::warn!(
+            blueprint_id = %b.blueprint_id,
+            item_class_id = %b.item_class_id,
+            category_id = %b.category_id,
+            "live sync: owned server blueprint not found in the catalog"
+        );
     }
 
     // Reconcile the active account's prod-scope owned set to `target`. Prod
@@ -957,11 +1071,36 @@ async fn live_sync_run(state: &AppState) -> Result<LiveSyncResult, AppError> {
     }
 
     state.refresh_owned_export().await;
-    Ok(LiveSyncResult {
-        total: server.len() as u32,
+
+    // The server can return duplicate entries (gRPC pagination overlap), so the
+    // raw count overstates ownership — report the distinct, in-catalog total.
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for b in &server {
+        *counts.entry(b.blueprint_id.as_str()).or_default() += 1;
+    }
+    for (id, n) in counts.iter().filter(|&(_, &n)| n > 1) {
+        let name = name_by_norm
+            .get(&norm_guid(id))
+            .and_then(|opt| opt.as_deref())
+            .unwrap_or("?");
+        tracing::warn!(blueprint_id = %id, name, count = n, "live sync: duplicate blueprint entry from server");
+    }
+    let distinct_ids = counts.len();
+    tracing::info!(
+        server_entries = server.len(),
+        distinct_ids,
+        owned = target.len(),
         added,
         removed,
-        unresolved,
+        unresolved = unresolved.len(),
+        "live sync reconcile"
+    );
+
+    Ok(LiveSyncResult {
+        total: target.len() as u32,
+        added,
+        removed,
+        unresolved: unresolved.len() as u32,
     })
 }
 
@@ -974,6 +1113,7 @@ async fn live_sync_impl(
 ) -> Result<LiveSyncResult, AppError> {
     match live_sync_run(state).await {
         Ok(r) => {
+            emit_ownership_changed(app); // refresh the catalog's owned set
             let mut body = format!("{} added, {} removed", r.added, r.removed);
             if r.unresolved > 0 {
                 body.push_str(&format!(" · {} not in catalog", r.unresolved));
@@ -1065,6 +1205,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         get_settings,
         set_live_sync,
         set_sensor,
+        set_onboarding_complete,
         live_sync_now,
         wipe_sc_cache,
     ])
@@ -1210,6 +1351,15 @@ fn resolve_blueprint_guids<'a>(
     best.map(|(_, guids)| guids)
 }
 
+/// Tell the frontend that owned blueprints changed behind its back — live sync
+/// reconcile, or the sensor auto-marking — so it can re-pull the owned set and
+/// keep the catalog count current without a restart.
+fn emit_ownership_changed(app: &tauri::AppHandle) {
+    if let Err(e) = app.emit("ownership-changed", ()) {
+        tracing::warn!("failed to emit ownership-changed: {e}");
+    }
+}
+
 /// v1.5 auto-sensing: tail the active install's `Game.log`, and when the
 /// logged session matches the active account + platform (pollution guard),
 /// auto-mark received blueprints owned and emit `blueprints-sensed`.
@@ -1345,6 +1495,7 @@ fn spawn_sensor(handle: tauri::AppHandle) {
 
             if !newly_owned.is_empty() {
                 state.refresh_owned_export().await; // keep the langpatch export in sync
+                emit_ownership_changed(&handle); // refresh the catalog's owned set
             }
             tracing::info!(
                 marked = marked.len(),
@@ -1413,8 +1564,54 @@ fn spawn_live_sync(handle: tauri::AppHandle) {
     });
 }
 
+/// Initialise logging: a console layer (visible in `tauri dev`) **and** a daily
+/// rotating file under `<app_data_root>/logs/hearth.<date>.log` (last 14 kept) —
+/// the file is what users/friends can send when something goes wrong, since a
+/// release build has no console. Quiet by default (warnings everywhere + our own
+/// info+); override with `RUST_LOG`. Returns the writer guard, which must be
+/// held for the process lifetime or buffered file logs are lost on exit.
+fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,hearth_lib=info"));
+    let console = fmt::layer().with_target(false);
+
+    let logs_dir = app_data_root().join("logs");
+    let file = std::fs::create_dir_all(&logs_dir).ok().and_then(|()| {
+        tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("hearth")
+            .filename_suffix("log")
+            .max_log_files(14)
+            .build(&logs_dir)
+            .ok()
+    });
+
+    match file {
+        Some(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let file_layer = fmt::layer().with_ansi(false).with_writer(writer);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(console)
+                .with(file_layer)
+                .init();
+            Some(guard)
+        }
+        None => {
+            tracing_subscriber::registry().with(filter).with(console).init();
+            None
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Keep the guard alive for the whole process so buffered file logs flush.
+    let _log_guard = init_logging();
+
     let builder = ipc_builder();
 
     #[cfg(debug_assertions)]

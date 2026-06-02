@@ -14,6 +14,7 @@
 // success.
 
 import { SvelteSet } from "svelte/reactivity";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   commands,
   type BpView,
@@ -154,4 +155,13 @@ export function ensureOwnership(): Promise<string | null> {
 export async function refreshOwnership() {
   const [o, w] = await Promise.all([commands.listOwned(), commands.listWishlist()]);
   if (o.status === "ok" && w.status === "ok") applyOwnership(o.data, w.data);
+}
+
+/** Subscribe to the backend's `ownership-changed` event (live sync reconcile,
+ *  sensor auto-mark) and refresh the shared owned set so the catalog count
+ *  stays current without a restart. Call once, in the root layout. */
+export function listenForOwnershipChanges(): Promise<UnlistenFn> {
+  return listen("ownership-changed", () => {
+    refreshOwnership();
+  });
 }

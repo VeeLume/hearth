@@ -48,7 +48,7 @@ pub fn log_backups_dir(channel_dir: &Path) -> PathBuf {
 /// who played, on what platform, and which blueprints they received. The
 /// history import folds these across all backups, grouping by `account_hint`
 /// (falling back to handle) to surface the identities the user then confirms.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionSummary {
     pub platform: Option<Platform>,
     pub handle: Option<String>,

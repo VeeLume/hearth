@@ -34,8 +34,12 @@ tokio.workspace = true
 dirs = "6"
 encoding_rs = "0.8"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 chrono.workspace = true
 reqwest.workspace = true
+# Parallel per-file log scan for the history import.
+rayon = "1"
 
 # Type-safe IPC bindings exported to src/lib/bindings.ts in debug builds.
 specta.workspace = true
