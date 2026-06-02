@@ -72,7 +72,9 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
             // While off we skip the poll entirely; re-enabling backfills whatever
             // was appended in the meantime.
             let enabled = match state.db().await {
-                Ok(db) => read_bool_setting(db, SENSOR_ENABLED, true).await.unwrap_or(true),
+                Ok(db) => read_bool_setting(db, SENSOR_ENABLED, true)
+                    .await
+                    .unwrap_or(true),
                 Err(_) => true,
             };
             if !enabled {
@@ -140,7 +142,9 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
                                     Ok(None) => {
                                         match hearth_storage::add_owned(db, scope, &guid).await {
                                             Ok(_) => newly_owned.push(guid),
-                                            Err(e) => tracing::warn!("sensor add_owned failed: {e:#}"),
+                                            Err(e) => {
+                                                tracing::warn!("sensor add_owned failed: {e:#}")
+                                            }
                                         }
                                     }
                                     Err(e) => tracing::warn!("sensor get_owned failed: {e:#}"),
@@ -198,7 +202,11 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
 
             if let Err(e) = handle.emit(
                 "blueprints-sensed",
-                BlueprintsSensed { marked, newly_owned, unresolved },
+                BlueprintsSensed {
+                    marked,
+                    newly_owned,
+                    unresolved,
+                },
             ) {
                 tracing::warn!("failed to emit blueprints-sensed: {e}");
             }

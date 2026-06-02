@@ -28,7 +28,11 @@ use hearth_export::OwnedBlueprints;
 /// so dev sessions never overwrite the real release export the live
 /// sc-langpatch consumes (see [`crate::app_data_root`]).
 pub fn export_path() -> Option<PathBuf> {
-    Some(crate::app_data_root().join("exports").join("owned-blueprints.json"))
+    Some(
+        crate::app_data_root()
+            .join("exports")
+            .join("owned-blueprints.json"),
+    )
 }
 
 /// Build the [`OwnedBlueprints`] contract from the active scope's owned guid

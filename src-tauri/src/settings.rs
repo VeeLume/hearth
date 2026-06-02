@@ -81,9 +81,13 @@ pub(crate) async fn set_live_sync(
     enabled: bool,
 ) -> Result<AppSettings, AppError> {
     let db = state.db().await?;
-    hearth_storage::set_setting(db, LIVE_SYNC_ENABLED, if enabled { "true" } else { "false" })
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    hearth_storage::set_setting(
+        db,
+        LIVE_SYNC_ENABLED,
+        if enabled { "true" } else { "false" },
+    )
+    .await
+    .map_err(|e| AppError::Storage(format!("{e:#}")))?;
     if enabled {
         hearth_storage::set_setting(db, LIVE_SYNC_CONSENTED, "true")
             .await

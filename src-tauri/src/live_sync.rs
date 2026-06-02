@@ -7,15 +7,15 @@ use crate::AppState;
 use crate::error::AppError;
 
 #[cfg(feature = "live-sync")]
-use std::collections::{HashMap, HashSet};
+use crate::settings::{LIVE_SYNC_ENABLED, ONLINE_ENABLED, read_bool_setting};
+#[cfg(feature = "live-sync")]
+use crate::{emit_ownership_changed, notify, plural};
 #[cfg(feature = "live-sync")]
 use hearth_core::Platform;
 #[cfg(feature = "live-sync")]
 use hearth_storage::Scope;
 #[cfg(feature = "live-sync")]
-use crate::settings::{LIVE_SYNC_ENABLED, ONLINE_ENABLED, read_bool_setting};
-#[cfg(feature = "live-sync")]
-use crate::{emit_ownership_changed, notify, plural};
+use std::collections::{HashMap, HashSet};
 
 /// Outcome of one live sync, for the Settings UI + the notification body.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -194,7 +194,10 @@ async fn live_sync_run(state: &AppState) -> Result<LiveSyncResult, AppError> {
 /// Run a live sync and emit a success/error notification either way. Used by
 /// both the `live_sync_now` command and the startup auto-sync.
 #[cfg(feature = "live-sync")]
-async fn live_sync_impl(app: &tauri::AppHandle, state: &AppState) -> Result<LiveSyncResult, AppError> {
+async fn live_sync_impl(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<LiveSyncResult, AppError> {
     match live_sync_run(state).await {
         Ok(r) => {
             emit_ownership_changed(app); // refresh the catalog's owned set
@@ -235,10 +238,16 @@ pub(crate) fn spawn_live_sync(handle: tauri::AppHandle) {
         let Ok(db) = state.db().await else { return };
         // Offline mode (master switch) suppresses startup sync even when live
         // sync is enabled.
-        if !read_bool_setting(db, ONLINE_ENABLED, true).await.unwrap_or(true) {
+        if !read_bool_setting(db, ONLINE_ENABLED, true)
+            .await
+            .unwrap_or(true)
+        {
             return;
         }
-        if !read_bool_setting(db, LIVE_SYNC_ENABLED, false).await.unwrap_or(false) {
+        if !read_bool_setting(db, LIVE_SYNC_ENABLED, false)
+            .await
+            .unwrap_or(false)
+        {
             return;
         }
         // The catalog is needed to resolve server ids → owned guids.

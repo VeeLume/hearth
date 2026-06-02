@@ -125,7 +125,11 @@ impl GameLogTailer {
     /// Start at the beginning of the file, so the first [`poll`](Self::poll)
     /// scans the whole current log (backfill + session header).
     pub fn new(path: PathBuf) -> Self {
-        Self { path, offset: 0, pending: String::new() }
+        Self {
+            path,
+            offset: 0,
+            pending: String::new(),
+        }
     }
 
     /// Read bytes appended since the last poll and return the events among
@@ -202,7 +206,10 @@ mod tests {
         assert_eq!(s.handle.as_deref(), Some("VeeLume"));
         assert_eq!(s.account_hint, Some(1155333));
         // "Foo" received twice → recorded once; order preserved.
-        assert_eq!(s.blueprint_names, vec!["Foo".to_string(), "Bar".to_string()]);
+        assert_eq!(
+            s.blueprint_names,
+            vec!["Foo".to_string(), "Bar".to_string()]
+        );
     }
 
     #[test]
@@ -235,8 +242,12 @@ mod tests {
             vec![
                 SensedEvent::SessionPlatform(Platform::Prod),
                 SensedEvent::SessionHandle("VeeLume".into()),
-                SensedEvent::BlueprintReceived { name: "Testudo Arms Clanguard".into() },
-                SensedEvent::BlueprintReceived { name: "S3 Attrition-3 Repeater".into() },
+                SensedEvent::BlueprintReceived {
+                    name: "Testudo Arms Clanguard".into()
+                },
+                SensedEvent::BlueprintReceived {
+                    name: "S3 Attrition-3 Repeater".into()
+                },
             ]
         );
     }
@@ -257,7 +268,10 @@ mod tests {
         assert!(tailer.poll().unwrap().is_empty());
 
         // Append one complete blueprint grant + a partial line (no newline).
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         write!(
             f,
             "<2026-05-30T15:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Foo Bar: \" [62] to queue. MissionId: [x] [Team]\n<2026-05-30T15:00:01.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Partial"
@@ -268,7 +282,9 @@ mod tests {
         let second = tailer.poll().unwrap();
         assert_eq!(
             second,
-            vec![SensedEvent::BlueprintReceived { name: "Foo Bar".into() }],
+            vec![SensedEvent::BlueprintReceived {
+                name: "Foo Bar".into()
+            }],
             "complete line parsed; the partial trailing line is held back"
         );
 
@@ -278,7 +294,9 @@ mod tests {
         let third = tailer.poll().unwrap();
         assert_eq!(
             third,
-            vec![SensedEvent::BlueprintReceived { name: "Partial Two".into() }],
+            vec![SensedEvent::BlueprintReceived {
+                name: "Partial Two".into()
+            }],
             "the carried partial completes on the next poll"
         );
 

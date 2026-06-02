@@ -14,13 +14,13 @@
 //!
 //! Run: cargo run -p hearth --example probe_variants -- pistol
 
-use sc_holotable::asset::{
-    AssetConfig, AssetData, AssetSource, Datacore, LocaleMap, RecordPaths,
-    snapshot_meta_from_install,
-};
 use sc_holotable::asset::generated::{
     DataForgeComponentParamsPtr, EntityClassDefinition, RecordLookup, SAttachableComponentParams,
     SItemDefinition,
+};
+use sc_holotable::asset::{
+    AssetConfig, AssetData, AssetSource, Datacore, LocaleMap, RecordPaths,
+    snapshot_meta_from_install,
 };
 use sc_holotable::crafting::{Blueprints, Process};
 use sc_holotable::items::Items;

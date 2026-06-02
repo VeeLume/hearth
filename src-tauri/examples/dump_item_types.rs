@@ -20,8 +20,10 @@ async fn main() {
     // (type, subtype) -> (count, sample display names)
     let mut by_type: BTreeMap<(String, String), (usize, Vec<String>)> = BTreeMap::new();
     let mut none_count = 0usize;
-    let unique: std::collections::HashSet<&str> =
-        bps.iter().map(|b| b.blueprint_record_guid.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = bps
+        .iter()
+        .map(|b| b.blueprint_record_guid.as_str())
+        .collect();
 
     for bp in &bps {
         let Some(ty) = bp.item_type.clone() else {
@@ -46,9 +48,12 @@ async fn main() {
         unique.len()
     );
     let mut rows: Vec<_> = by_type.into_iter().collect();
-    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
     for ((ty, sub), (count, samples)) in &rows {
-        println!("{count:>5}  {ty:<22} / {sub:<16}  e.g. {}", samples.join(", "));
+        println!(
+            "{count:>5}  {ty:<22} / {sub:<16}  e.g. {}",
+            samples.join(", ")
+        );
     }
     if none_count > 0 {
         println!("{none_count:>5}  <no item_type>");

@@ -38,7 +38,9 @@ pub enum SensedEvent {
 /// signal Hearth tracks.
 pub fn parse_line(line: &str) -> Option<SensedEvent> {
     if let Some(name) = blueprint_received(line) {
-        return Some(SensedEvent::BlueprintReceived { name: name.to_owned() });
+        return Some(SensedEvent::BlueprintReceived {
+            name: name.to_owned(),
+        });
     }
     if let Some(platform) = session_platform(line) {
         return Some(SensedEvent::SessionPlatform(platform));
@@ -122,13 +124,16 @@ fn session_handle(line: &str) -> Option<&str> {
 /// artifacts (the ephemeral `5xxxxxx` ids the identity investigation flagged)
 /// don't leak in.
 fn session_account_id(line: &str) -> Option<i64> {
-    if !line.contains("<AccountLoginCharacterStatus_Character>") || !line.contains("STATE_CURRENT") {
+    if !line.contains("<AccountLoginCharacterStatus_Character>") || !line.contains("STATE_CURRENT")
+    {
         return None;
     }
     const PREFIX: &str = "accountId ";
     let start = line.find(PREFIX)? + PREFIX.len();
     let rest = &line[start..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     rest[..end].parse::<i64>().ok()
 }
 
@@ -144,7 +149,9 @@ mod tests {
         let line = r#"<2026-05-30T14:43:35.628Z> [Notice] <SHUDEvent_OnNotification> Added notification "Received Blueprint: Testudo Arms Clanguard: " [60] to queue. New queue size: 2, MissionId: [00000000-0000-0000-0000-000000000000], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]"#;
         assert_eq!(
             parse_line(line),
-            Some(SensedEvent::BlueprintReceived { name: "Testudo Arms Clanguard".into() })
+            Some(SensedEvent::BlueprintReceived {
+                name: "Testudo Arms Clanguard".into()
+            })
         );
     }
 
@@ -153,7 +160,9 @@ mod tests {
         let line = r#"<2026-05-30T14:43:35.628Z> [Notice] <SHUDEvent_OnNotification> Added notification "Received Blueprint: S3 Attrition-3 Repeater: " [61] to queue. New queue size: 3, MissionId: [00000000-0000-0000-0000-000000000000], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]"#;
         assert_eq!(
             parse_line(line),
-            Some(SensedEvent::BlueprintReceived { name: "S3 Attrition-3 Repeater".into() })
+            Some(SensedEvent::BlueprintReceived {
+                name: "S3 Attrition-3 Repeater".into()
+            })
         );
     }
 
@@ -162,7 +171,8 @@ mod tests {
         // These repeat the blueprint text but are NOT new acquisitions.
         let next = r#"<2026-05-30T14:43:41.167Z> [Notice] <UpdateNotificationItem> Notification "Received Blueprint: Testudo Arms Clanguard: " [60], Action: Next [Team_CoreGameplayFeatures][Missions][Comms]"#;
         let fade = r#"<2026-05-30T14:43:46.170Z> [Notice] <UpdateNotificationItem> Notification "Received Blueprint: Testudo Arms Clanguard: " [60], Action: StartFade [Team_CoreGameplayFeatures][Missions][Comms]"#;
-        let echo = r#"<2026-05-30T14:43:35.628Z>    "Received Blueprint: Testudo Arms Clanguard: " [60]"#;
+        let echo =
+            r#"<2026-05-30T14:43:35.628Z>    "Received Blueprint: Testudo Arms Clanguard: " [60]"#;
         assert_eq!(parse_line(next), None);
         assert_eq!(parse_line(fade), None);
         assert_eq!(parse_line(echo), None);
@@ -171,25 +181,37 @@ mod tests {
     #[test]
     fn parses_session_platform() {
         let line = r#"<2026-05-30T13:19:05.804Z>    [Cmdline* ] --envtag='PUB'"#;
-        assert_eq!(parse_line(line), Some(SensedEvent::SessionPlatform(Platform::Prod)));
+        assert_eq!(
+            parse_line(line),
+            Some(SensedEvent::SessionPlatform(Platform::Prod))
+        );
     }
 
     #[test]
     fn maps_non_pub_envtag_to_ptu() {
         let line = r#"<2026-05-30T13:19:05.804Z>    [Cmdline* ] --envtag='PTU'"#;
-        assert_eq!(parse_line(line), Some(SensedEvent::SessionPlatform(Platform::Ptu)));
+        assert_eq!(
+            parse_line(line),
+            Some(SensedEvent::SessionPlatform(Platform::Ptu))
+        );
     }
 
     #[test]
     fn parses_session_handle() {
         let line = r#"<2026-05-30T13:19:29.286Z> [Notice] <Legacy login response> [CIG-net] User Login Success - Handle[VeeLume] - Time[341393589] [Team_GameServices][Login]"#;
-        assert_eq!(parse_line(line), Some(SensedEvent::SessionHandle("VeeLume".into())));
+        assert_eq!(
+            parse_line(line),
+            Some(SensedEvent::SessionHandle("VeeLume".into()))
+        );
     }
 
     #[test]
     fn parses_session_account_id() {
         let line = r#"<2026-05-30T13:19:26.325Z> [Notice] <AccountLoginCharacterStatus_Character> Character: createdAt 1778733647232 - updatedAt 1778788302608 - geid 204717100112 - accountId 1155333 - name VeeLume - state STATE_CURRENT [Team_GameServices][Login]"#;
-        assert_eq!(parse_line(line), Some(SensedEvent::SessionAccountId(1155333)));
+        assert_eq!(
+            parse_line(line),
+            Some(SensedEvent::SessionAccountId(1155333))
+        );
     }
 
     #[test]

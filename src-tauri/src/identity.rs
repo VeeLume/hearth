@@ -48,12 +48,14 @@ pub async fn fetch_profile(handle: &str) -> Result<ProfileInfo, IdentityError> {
         .timeout(FETCH_TIMEOUT)
         .build()
         .expect("reqwest client");
-    let resp = client.get(&url).send().await.map_err(|source| {
-        IdentityError::Http {
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|source| IdentityError::Http {
             handle: handle.to_string(),
             source,
-        }
-    })?;
+        })?;
     if !resp.status().is_success() {
         return Err(IdentityError::Status {
             handle: handle.to_string(),
