@@ -1915,6 +1915,9 @@ pub fn run() {
         .expect("exporting TypeScript bindings");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {

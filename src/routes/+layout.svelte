@@ -17,6 +17,7 @@
   import Onboarding from "$lib/Onboarding.svelte";
   import { onboarding, maybeStart } from "$lib/onboardingStore.svelte";
   import { maybeStartupImport } from "$lib/importStore.svelte";
+  import { checkForUpdates } from "$lib/updater";
   import "../app.css";
 
   let { children } = $props();
@@ -78,6 +79,9 @@
     // If sensing is on, quietly catch up on blueprints logged while the app
     // was closed (now rotated into logbackups/). Fast via the per-file cache.
     maybeStartupImport();
+
+    // Check GitHub for a newer release (skipped in offline mode). Fire-and-forget.
+    checkForUpdates();
 
     // Remove the pre-hydration splash from app.html now that Svelte
     // is in control. Fades out via the .hidden class for ~200ms.

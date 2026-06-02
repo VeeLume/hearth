@@ -31,6 +31,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Auto-update: check GitHub Releases on launch, prompt + install, relaunch.
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
 
 serde.workspace = true
 serde_json.workspace = true

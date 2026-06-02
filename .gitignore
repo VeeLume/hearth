@@ -29,3 +29,9 @@ src-tauri/.cargo/
 
 # Locale Release Build
 hearth.exe
+
+# Tauri updater signing keys — never commit. The private key lives outside the
+# repo (GitHub secret TAURI_SIGNING_PRIVATE_KEY); only the public key is in
+# tauri.conf.json. This is a belt-and-suspenders guard.
+*.key
+*.key.pub

@@ -51,13 +51,12 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
-      # NOTE: signing keys + updater config get wired in at Stage 8 before the
-      # first real tag push. Until then, leaving TAURI_SIGNING_PRIVATE_KEY unset
-      # means tauri-action just doesn't produce updater artifacts.
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: .
           tagName: ${{ github.ref_name }}
@@ -65,4 +64,4 @@ jobs:
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true
