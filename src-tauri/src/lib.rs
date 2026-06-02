@@ -43,7 +43,6 @@ pub mod sensors;
 mod bp_resolve;
 mod import;
 mod live_sync;
-mod rename;
 mod sensing;
 mod settings;
 
@@ -783,7 +782,7 @@ pub fn run() {
         .setup(|app| {
             spawn_warmup(app.handle().clone());
             sensing::spawn_sensor(app.handle().clone());
-            rename::spawn_rename_check(app.handle().clone());
+            identity::spawn_rename_check(app.handle().clone());
             #[cfg(feature = "live-sync")]
             live_sync::spawn_live_sync(app.handle().clone());
             Ok(())
