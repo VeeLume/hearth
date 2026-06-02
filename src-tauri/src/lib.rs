@@ -20,13 +20,9 @@
 //! UI can show identity and accept clicks while the catalog builds in
 //! the background.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use hearth_core::{
-    Account, BpView, MissionRef, MissionView, OwnedBlueprint, Platform, RecordId, WishIntent,
-    WishlistEntry,
-};
+use hearth_core::{Account, BpView, MissionView};
 use hearth_storage::{DbPool, Scope};
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::{Emitter, Manager};
@@ -41,6 +37,7 @@ pub mod sc_loader;
 pub mod sensors;
 
 mod bp_resolve;
+mod commands;
 mod import;
 mod live_sync;
 mod sensing;
@@ -48,7 +45,7 @@ mod settings;
 
 use error::AppError;
 use sc_loader::Discovery;
-use settings::{LAST_ACTIVE_HANDLE, ONLINE_ENABLED, read_bool_setting};
+use settings::LAST_ACTIVE_HANDLE;
 
 // ── App state ───────────────────────────────────────────────────────────────
 
@@ -275,321 +272,6 @@ fn db_path() -> PathBuf {
     app_data_root().join("hearth.db")
 }
 
-// ── Account shapes ────────────────────────────────────────────────────────────
-
-/// An account plus its recorded past handles — the Accounts UI shape.
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
-struct AccountWithAliases {
-    account: Account,
-    aliases: Vec<String>,
-}
-
-// ── Tauri commands ──────────────────────────────────────────────────────────
-
-#[tauri::command]
-#[specta::specta]
-async fn list_blueprints(state: tauri::State<'_, AppState>) -> Result<Vec<BpView>, AppError> {
-    Ok(state.catalog().await?.clone())
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn list_missions(state: tauri::State<'_, AppState>) -> Result<Vec<MissionView>, AppError> {
-    Ok(state.missions().await?.clone())
-}
-
-/// Map of `blueprint_record_guid → missions that grant it`, derived by
-/// inverting the cooked mission list. Powers the wishlist's ⚐ fulfilment slot
-/// ("which missions grant this blueprint?"). Awaits the same shared cooked
-/// data as `list_missions` — no extra load cost when the catalog is warm.
-#[tauri::command]
-#[specta::specta]
-async fn missions_by_blueprint(
-    state: tauri::State<'_, AppState>,
-) -> Result<HashMap<String, Vec<MissionRef>>, AppError> {
-    Ok(hearth_core::missions_by_blueprint(state.missions().await?))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn list_owned(state: tauri::State<'_, AppState>) -> Result<Vec<OwnedBlueprint>, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    hearth_storage::list_owned(db, scope)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn add_owned(
-    state: tauri::State<'_, AppState>,
-    blueprint_guid: String,
-) -> Result<OwnedBlueprint, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    let added = hearth_storage::add_owned(db, scope, &blueprint_guid)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    state.refresh_owned_export().await;
-    Ok(added)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn remove_owned(
-    state: tauri::State<'_, AppState>,
-    blueprint_guid: String,
-) -> Result<bool, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    let removed = hearth_storage::remove_owned(db, scope, &blueprint_guid)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    state.refresh_owned_export().await;
-    Ok(removed)
-}
-
-/// Flip ownership of a blueprint in the active scope. Returns the new
-/// owned state (`true` = now owned). Stage 3's primary write path.
-#[tauri::command]
-#[specta::specta]
-async fn toggle_owned(
-    state: tauri::State<'_, AppState>,
-    blueprint_guid: String,
-) -> Result<bool, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    let currently_owned = hearth_storage::get_owned(db, scope, &blueprint_guid)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?
-        .is_some();
-    let now_owned = if currently_owned {
-        hearth_storage::remove_owned(db, scope, &blueprint_guid)
-            .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        false
-    } else {
-        hearth_storage::add_owned(db, scope, &blueprint_guid)
-            .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        true
-    };
-    state.refresh_owned_export().await;
-    Ok(now_owned)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn list_wishlist(state: tauri::State<'_, AppState>) -> Result<Vec<WishlistEntry>, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    hearth_storage::list_wishlist(db, scope)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
-}
-
-/// Flip one wishlist intent for a blueprint in the active scope. The two
-/// intents (`Recipe` = want the BP, `Item` = want a crafted copy) toggle
-/// independently. Returns the new state (`true` = now wanted).
-#[tauri::command]
-#[specta::specta]
-async fn toggle_wishlist(
-    state: tauri::State<'_, AppState>,
-    blueprint_guid: String,
-    intent: WishIntent,
-) -> Result<bool, AppError> {
-    let scope = state.active_scope().await?;
-    let db = state.db().await?;
-    let currently_wanted = hearth_storage::get_wishlist_entry(db, scope, &blueprint_guid, intent)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?
-        .is_some();
-    if currently_wanted {
-        hearth_storage::remove_from_wishlist(db, scope, &blueprint_guid, intent)
-            .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        Ok(false)
-    } else {
-        hearth_storage::add_to_wishlist(db, scope, &blueprint_guid, intent)
-            .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        Ok(true)
-    }
-}
-
-/// Surface the active platform + channel + account so the UI can show
-/// "PU · LIVE · @VeeLume" or similar. Fast — needs only discovery + db,
-/// not the catalog, so the sidebar renders without waiting on the DCB
-/// parse.
-#[tauri::command]
-#[specta::specta]
-async fn active_scope(state: tauri::State<'_, AppState>) -> Result<ActiveScope, AppError> {
-    let (platform, channel) = {
-        let d = state.discovery().await?;
-        (d.platform, d.channel.display_name().to_string())
-    };
-    let account = state.active_account().await?;
-    Ok(ActiveScope {
-        platform,
-        channel,
-        account,
-    })
-}
-
-/// List every RSI account this desktop has known. Stage 3 wires this
-/// to a picker; Stage 2.5 just exposes the data.
-#[tauri::command]
-#[specta::specta]
-async fn list_accounts(state: tauri::State<'_, AppState>) -> Result<Vec<Account>, AppError> {
-    let db = state.db().await?;
-    hearth_storage::list_accounts(db)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))
-}
-
-/// Scrape `/citizens/<handle>` for the given account and write the
-/// immutable anchors (`citizen_record`, `enlisted`) back to the row.
-/// Refreshes `last_verified`. Returns the up-to-date `Account`.
-///
-/// No-ops with an error when Hearth is in offline mode (the master online
-/// switch) — the UI hides the button, but this guards the network call regardless.
-#[tauri::command]
-#[specta::specta]
-async fn verify_account(
-    state: tauri::State<'_, AppState>,
-    account_id: RecordId,
-) -> Result<Account, AppError> {
-    let db = state.db().await?;
-    if !read_bool_setting(db, ONLINE_ENABLED, true).await? {
-        return Err(AppError::Identity(
-            "Hearth is in offline mode (Settings → Account → Online features)".into(),
-        ));
-    }
-    let account = hearth_storage::get_account(db, account_id)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?
-        .ok_or_else(|| AppError::Internal(format!("account {account_id} not found")))?;
-    let info = identity::fetch_profile(&account.handle)
-        .await
-        .map_err(|e| AppError::Identity(format!("{e:#}")))?;
-    hearth_storage::update_account_anchors(db, account.id, info.citizen_record, &info.enlisted)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    hearth_storage::get_account(db, account.id)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?
-        .ok_or_else(|| AppError::Internal("account vanished after update".into()))
-}
-
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
-struct ActiveScope {
-    platform: Platform,
-    channel: String,
-    account: Account,
-}
-
-// ── Account management ────────────────────────────────────────────────────────
-
-/// Accounts with their recorded past handles, for the Accounts UI.
-#[tauri::command]
-#[specta::specta]
-async fn list_accounts_detailed(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<AccountWithAliases>, AppError> {
-    let db = state.db().await?;
-    let accounts = hearth_storage::list_accounts(db)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    let mut out = Vec::with_capacity(accounts.len());
-    for account in accounts {
-        let aliases = hearth_storage::list_account_aliases(db, account.id)
-            .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-        out.push(AccountWithAliases { account, aliases });
-    }
-    Ok(out)
-}
-
-/// Manually record a past handle for an account (rename the model didn't catch).
-#[tauri::command]
-#[specta::specta]
-async fn add_account_alias(
-    state: tauri::State<'_, AppState>,
-    account_id: RecordId,
-    handle: String,
-) -> Result<Vec<AccountWithAliases>, AppError> {
-    let db = state.db().await?;
-    hearth_storage::add_account_alias(db, account_id, &handle)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    list_accounts_detailed(state).await
-}
-
-/// Merge one account into another (same person, two rows — e.g. a rename that
-/// created a duplicate). Reassigns owned + wishlist data; `from` is absorbed.
-/// Manual + explicit: the tool never auto-merges two accounts.
-#[tauri::command]
-#[specta::specta]
-async fn merge_accounts(
-    state: tauri::State<'_, AppState>,
-    from: RecordId,
-    into: RecordId,
-) -> Result<Vec<AccountWithAliases>, AppError> {
-    let db = state.db().await?;
-    hearth_storage::merge_accounts(db, from, into)
-        .await
-        .map_err(|e| AppError::Storage(format!("{e:#}")))?;
-    // The active account's owned set may have changed — keep the export fresh.
-    state.refresh_owned_export().await;
-    list_accounts_detailed(state).await
-}
-
-/// Predict which cache tier the catalog load will use, so the loading screen
-/// can name the path (and warn it may be slow). Fast — just checks snapshot
-/// files on disk; needs only discovery.
-#[tauri::command]
-#[specta::specta]
-async fn predicted_load_tier(
-    state: tauri::State<'_, AppState>,
-) -> Result<sc_loader::LoadTier, AppError> {
-    let channel = state.discovery().await?.channel;
-    Ok(sc_loader::predict_tier(channel))
-}
-
-// ── Debug commands ──────────────────────────────────────────────────────────
-
-/// Wipe the SC reference-data snapshot cache at
-/// `%APPDATA%/hearth/cache/` (every channel's `catalog.cook` +
-/// `extract.snap`) and restart the app so the OnceCells in AppState
-/// reload from scratch.
-///
-/// Personal-state data (the `hearth.db` SQLite) is *not* touched —
-/// owned blueprints, accounts, and the rest of `%APPDATA%/hearth/`
-/// outside `cache/` stays put. After the restart, the next launch
-/// runs the cold-path live parse (~30s on a typical install) before
-/// catalog UI becomes responsive again.
-///
-/// Diverges via `AppHandle::restart()` — never returns to the caller
-/// on success. The frontend should expect either an error reply or a
-/// hard restart.
-#[tauri::command]
-#[specta::specta]
-async fn wipe_sc_cache(app: tauri::AppHandle) -> Result<(), AppError> {
-    let cache_root = app_data_root().join("cache");
-    if cache_root.exists() {
-        std::fs::remove_dir_all(&cache_root).map_err(|e| {
-            AppError::Internal(format!("removing cache dir {}: {e}", cache_root.display()))
-        })?;
-        tracing::info!(path = %cache_root.display(), "wiped SC snapshot cache");
-    } else {
-        tracing::info!("no SC cache dir present; nothing to wipe");
-    }
-    // `restart()` returns `!` — the process is replaced before the
-    // future ever resolves, so the Result `Ok` is never reached.
-    app.restart()
-}
-
 // ── App setup ───────────────────────────────────────────────────────────────
 
 /// Single source of truth for the IPC command list. Used both by
@@ -598,31 +280,31 @@ async fn wipe_sc_cache(app: tauri::AppHandle) -> Result<(), AppError> {
 /// app (which would require loading SC data).
 pub fn ipc_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
-        list_blueprints,
-        list_missions,
-        missions_by_blueprint,
-        list_owned,
-        add_owned,
-        remove_owned,
-        toggle_owned,
-        list_wishlist,
-        toggle_wishlist,
-        active_scope,
-        list_accounts,
-        verify_account,
-        list_accounts_detailed,
-        add_account_alias,
-        merge_accounts,
+        commands::blueprints::list_blueprints,
+        commands::missions::list_missions,
+        commands::missions::missions_by_blueprint,
+        commands::blueprints::list_owned,
+        commands::blueprints::add_owned,
+        commands::blueprints::remove_owned,
+        commands::blueprints::toggle_owned,
+        commands::blueprints::list_wishlist,
+        commands::blueprints::toggle_wishlist,
+        commands::accounts::active_scope,
+        commands::accounts::list_accounts,
+        commands::accounts::verify_account,
+        commands::accounts::list_accounts_detailed,
+        commands::accounts::add_account_alias,
+        commands::accounts::merge_accounts,
         import::scan_log_history,
         import::apply_log_import,
-        predicted_load_tier,
+        commands::catalog::predicted_load_tier,
         settings::get_settings,
         settings::set_live_sync,
         settings::set_sensor,
         settings::set_online,
         settings::set_onboarding_complete,
         live_sync::live_sync_now,
-        wipe_sc_cache,
+        commands::catalog::wipe_sc_cache,
     ])
 }
 
