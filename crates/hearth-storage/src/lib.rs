@@ -12,11 +12,13 @@
 //! upserted by handle (bootstrap reads it from the launcher store).
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use hearth_core::{Account, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry};
-use sqlx::{Pool, Sqlite, sqlite::SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{Pool, Sqlite};
 
 /// Concrete connection-pool type used across the storage API.
 pub type DbPool = Pool<Sqlite>;
@@ -44,17 +46,23 @@ pub async fn open(path: &Path) -> Result<DbPool> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let url = format!("sqlite://{}?mode=rwc", path.display());
+    // Per-connection options (vs. a one-off `PRAGMA` on the pool, which would
+    // configure only one of the connections): FK enforcement on every
+    // connection, WAL so a reader never blocks the writer, and a busy_timeout
+    // so a brief write contention waits instead of erroring with SQLITE_BUSY.
+    // Building from `SqliteConnectOptions` also sidesteps the fragile
+    // `sqlite://C:\…?mode=rwc` URL string (backslashes + drive colon).
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
-        .connect(&url)
+        .connect_with(opts)
         .await
         .with_context(|| format!("opening sqlite at {}", path.display()))?;
-    // FK enforcement is off by default in SQLite.
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&pool)
-        .await
-        .context("enabling foreign_keys pragma")?;
     sqlx::migrate!()
         .run(&pool)
         .await
@@ -100,13 +108,30 @@ pub async fn upsert_account_by_handle(pool: &DbPool, handle: &str) -> Result<Acc
     }
     let id = RecordId::new_v7();
     let created_at = Utc::now();
-    sqlx::query("INSERT INTO accounts (id, handle, created_at) VALUES (?, ?, ?)")
-        .bind(id.to_string())
-        .bind(handle)
-        .bind(created_at.to_rfc3339())
-        .execute(pool)
-        .await
-        .context("inserting accounts")?;
+    // `ON CONFLICT DO NOTHING` makes this race-safe: several startup paths
+    // (warmup export, the sidebar/onboarding `active_scope`, the rename check)
+    // can call this concurrently for the same handle. Without it, all of them
+    // pass the `get_account_by_handle` check above, then collide on the
+    // `accounts.handle` UNIQUE constraint — one wins, the rest error out.
+    let inserted = sqlx::query(
+        "INSERT INTO accounts (id, handle, created_at) VALUES (?, ?, ?) \
+         ON CONFLICT(handle) DO NOTHING",
+    )
+    .bind(id.to_string())
+    .bind(handle)
+    .bind(created_at.to_rfc3339())
+    .execute(pool)
+    .await
+    .context("inserting accounts")?;
+
+    if inserted.rows_affected() == 0 {
+        // Lost the race: a concurrent caller inserted this handle first (under
+        // its own id). Return the winning row rather than the one we'd have made.
+        return get_account_by_handle(pool, handle)
+            .await?
+            .context("account row missing after ON CONFLICT DO NOTHING");
+    }
+
     Ok(Account {
         id,
         handle: handle.to_string(),
@@ -726,6 +751,35 @@ mod tests {
         assert_eq!(refreshed.citizen_record, Some(1196670));
         assert_eq!(refreshed.enlisted.as_deref(), Some("2016-01-31"));
         assert!(refreshed.last_verified.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_upsert_same_handle_converges() {
+        // Reproduces the cold-start race: several startup paths upsert the same
+        // handle at once. Needs the real multi-connection pool — `open_in_memory`
+        // is single-connection and would serialize the collision away. Pre-fix,
+        // the losers hit `UNIQUE constraint failed: accounts.handle`; post-fix
+        // (ON CONFLICT DO NOTHING + re-read) they all converge on one row.
+        let dir = std::env::temp_dir().join(format!("hearth_upsert_race_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = dir.join("hearth.db");
+        let pool = open(&db).await.unwrap();
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let pool = pool.clone();
+            set.spawn(async move { upsert_account_by_handle(&pool, "VeeLume").await });
+        }
+        let mut ids = std::collections::HashSet::new();
+        while let Some(res) = set.join_next().await {
+            let acct = res.unwrap().expect("concurrent upsert must not error");
+            ids.insert(acct.id);
+        }
+        assert_eq!(ids.len(), 1, "all concurrent upserts must return the same row");
+        assert_eq!(list_accounts(&pool).await.unwrap().len(), 1);
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
