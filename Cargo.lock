@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "hearth"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "hearth-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1707,14 +1707,14 @@ dependencies = [
 
 [[package]]
 name = "hearth-export"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "hearth-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hearth-core",
  "hearth-storage",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "hearth-storage"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",

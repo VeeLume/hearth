@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-04
+
 ### Added
 
 - **Resources page & live resource sync.** A new **Resources** tab lists your in-game resource inventory — materials grouped by name with their total amount, best quality, and an expandable per-quality / per-location breakdown (hand-mined gems like Hadanite show as a `×N` unit count, bulk materials in SCU). It's filled by an optional **live resource sync** that reads your inventory from your RSI account (opt-in, off by default; an unofficial, read-only connection, against Star Citizen's Terms of Service; shares live blueprint sync's one-time consent and the *Online features* switch). Enable it from onboarding or *Settings → Blueprint import*.
@@ -50,7 +52,8 @@ First public alpha — a personal, offline-first blueprint / mission / wishlist 
 - **Offline mode** — a single *Online features* switch disables all network use while leaving local tracking fully working.
 - **First-launch onboarding** and **auto-update** (signed; checks GitHub Releases on launch, skipped in offline mode).
 
-[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/VeeLume/hearth/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/VeeLume/hearth/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/VeeLume/hearth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VeeLume/hearth/releases/tag/v0.1.0
