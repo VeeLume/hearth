@@ -27,6 +27,9 @@ src-tauri/.cargo/
 # Claude Code memory (local-only)
 .claude/
 
+# Maintainer-private agent notes (vault path etc.) — never commit
+CLAUDE.local.md
+
 # Locale Release Build
 hearth.exe
 
