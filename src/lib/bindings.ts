@@ -531,31 +531,65 @@ export type ImportResult = { accounts_touched: number; newly_owned: number;
  */
 unresolved: string[] }
 /**
- * One resource ingredient in a [`Recipe`].
+ * One ingredient in a [`Recipe`] — either a bulk resource or a discrete
+ * item, discriminated by [`Ingredient::kind`].
  */
 export type Ingredient = { 
 /**
- * `ResourceType` GUID, hex-string form.
+ * Which cost kind this ingredient is. Determines whether quantity
+ * is read from `quantity_scu` (`Resource`) or `count` (`Item`), and
+ * what `guid` points at.
  */
-resource_guid: string; 
+kind: IngredientKind; 
 /**
- * Resolved resource name (e.g. `"Aluminum"`). `None` when the
- * resource's `name_key` doesn't resolve in the locale map (rare
- * — SC 4.8 resolves 205 / 206).
+ * Source GUID, hex-string form. A `ResourceType` GUID when `kind`
+ * is [`IngredientKind::Resource`], an `EntityClassDefinition` GUID
+ * when it's [`IngredientKind::Item`].
  */
-resource_name: string | null; 
+guid: string; 
 /**
- * Quantity normalized to SCU (Standard Cargo Units). `None` when
- * the cost's `CargoQuantity` is a polymorphic-fallback variant
- * the generator doesn't recognise. Typical recipe ingredients are
+ * Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None`
+ * when the source's `name_key` doesn't resolve in the locale map.
+ */
+name: string | null; 
+/**
+ * Quantity normalized to SCU (Standard Cargo Units), for `Resource`
+ * ingredients. `None` for `Item` ingredients (use `count`), or when
+ * the cost's `CargoQuantity` is a polymorphic-fallback variant the
+ * generator doesn't recognise. Typical resource ingredients are
  * well under 1 SCU each (e.g. P4-AR: Aluminum 0.04, Iron 0.02).
  */
 quantity_scu: number | null; 
 /**
- * Minimum required quality tier (`0` if no lower bound). Today
- * always 0 in SC 4.8.
+ * Quantity as a discrete unit count, for `Item` ingredients (e.g.
+ * Hadanite ×13). `None` for `Resource` ingredients (use
+ * `quantity_scu`).
+ */
+count: number | null; 
+/**
+ * Minimum required quality tier (`0` if no lower bound).
  */
 min_quality: number }
+/**
+ * Whether a recipe ingredient is a bulk resource or a discrete item.
+ * 
+ * SC recipes mix two cost kinds: `Resource` ingredients are
+ * ship-mined / refined materials measured in SCU cargo
+ * (`CraftingCost_Resource` → `ResourceType`); `Item` ingredients are
+ * discrete carried entities measured as a unit count
+ * (`CraftingCost_Item` → `EntityClassDefinition`) — the hand-mined
+ * gems (Hadanite, …) live here. SC 4.8 has both in real recipes, so
+ * the catalog must surface both.
+ */
+export type IngredientKind = 
+/**
+ * Bulk resource — quantity in SCU (see [`Ingredient::quantity_scu`]).
+ */
+"resource" | 
+/**
+ * Discrete item — quantity is a unit count (see [`Ingredient::count`]).
+ */
+"item"
 /**
  * A non-currency item reward (ship unlock, collector item, …).
  */

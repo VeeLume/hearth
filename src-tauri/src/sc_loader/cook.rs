@@ -119,10 +119,11 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
                 view.family_base_name = Some(name.to_owned());
             }
         }
-        // Resolve resource_name on each ingredient (bp_view leaves it
-        // None because it has no Resources/LocaleMap access).
+        // Resolve each ingredient's name (bp_view leaves it None because
+        // it has no Resources/Items/LocaleMap access). Resource costs
+        // resolve via Resources, item costs (hand-mined gems) via Items.
         if let Some(recipe) = view.recipe.as_mut() {
-            fill_resource_names(&mut recipe.ingredients, &resources, locale);
+            fill_ingredient_names(&mut recipe.ingredients, &resources, &items, locale);
         }
         out.push(view);
     }
@@ -372,26 +373,32 @@ fn encounter_summary(m: &Mission) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// Fill `Ingredient.resource_name` for each ingredient by looking up
-/// the resource's `name_key` in the locale map. Ingredients whose GUID
-/// doesn't parse or doesn't resolve stay `None`; the UI falls back to
-/// the GUID.
-fn fill_resource_names(
+/// Fill `Ingredient.name` for each ingredient by resolving its source's
+/// `name_key` in the locale map. Resource ingredients resolve through the
+/// `Resources` catalog (`ResourceType` GUID); item ingredients — the
+/// hand-mined gems — resolve through `Items` (`EntityClassDefinition`
+/// GUID). Ingredients whose GUID doesn't parse or doesn't resolve stay
+/// `None`; the UI falls back to the GUID.
+fn fill_ingredient_names(
     ingredients: &mut [hearth_core::Ingredient],
     resources: &Resources,
+    items: &Items,
     locale: &LocaleMap,
 ) {
+    use hearth_core::IngredientKind;
     for ing in ingredients {
-        let Ok(guid) = ing.resource_guid.parse::<sc_holotable::asset::Guid>() else {
+        let Ok(guid) = ing.guid.parse::<sc_holotable::asset::Guid>() else {
             continue;
         };
-        let Some(resource) = resources.get(&guid) else {
-            continue;
+        let name_key = match ing.kind {
+            IngredientKind::Resource => resources.get(&guid).map(|r| &r.name_key),
+            IngredientKind::Item => items.name_key(&guid),
         };
-        if let Some(name) = locale.resolve(&resource.name_key)
+        if let Some(name_key) = name_key
+            && let Some(name) = locale.resolve(name_key)
             && !name.is_empty()
         {
-            ing.resource_name = Some(name.to_owned());
+            ing.name = Some(name.to_owned());
         }
     }
 }

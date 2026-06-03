@@ -382,21 +382,49 @@ pub struct Recipe {
     pub ingredients: Vec<Ingredient>,
 }
 
-/// One resource ingredient in a [`Recipe`].
+/// Whether a recipe ingredient is a bulk resource or a discrete item.
+///
+/// SC recipes mix two cost kinds: `Resource` ingredients are
+/// ship-mined / refined materials measured in SCU cargo
+/// (`CraftingCost_Resource` → `ResourceType`); `Item` ingredients are
+/// discrete carried entities measured as a unit count
+/// (`CraftingCost_Item` → `EntityClassDefinition`) — the hand-mined
+/// gems (Hadanite, …) live here. SC 4.8 has both in real recipes, so
+/// the catalog must surface both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum IngredientKind {
+    /// Bulk resource — quantity in SCU (see [`Ingredient::quantity_scu`]).
+    Resource,
+    /// Discrete item — quantity is a unit count (see [`Ingredient::count`]).
+    Item,
+}
+
+/// One ingredient in a [`Recipe`] — either a bulk resource or a discrete
+/// item, discriminated by [`Ingredient::kind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct Ingredient {
-    /// `ResourceType` GUID, hex-string form.
-    pub resource_guid: String,
-    /// Resolved resource name (e.g. `"Aluminum"`). `None` when the
-    /// resource's `name_key` doesn't resolve in the locale map (rare
-    /// — SC 4.8 resolves 205 / 206).
-    pub resource_name: Option<String>,
-    /// Quantity normalized to SCU (Standard Cargo Units). `None` when
-    /// the cost's `CargoQuantity` is a polymorphic-fallback variant
-    /// the generator doesn't recognise. Typical recipe ingredients are
+    /// Which cost kind this ingredient is. Determines whether quantity
+    /// is read from `quantity_scu` (`Resource`) or `count` (`Item`), and
+    /// what `guid` points at.
+    pub kind: IngredientKind,
+    /// Source GUID, hex-string form. A `ResourceType` GUID when `kind`
+    /// is [`IngredientKind::Resource`], an `EntityClassDefinition` GUID
+    /// when it's [`IngredientKind::Item`].
+    pub guid: String,
+    /// Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None`
+    /// when the source's `name_key` doesn't resolve in the locale map.
+    pub name: Option<String>,
+    /// Quantity normalized to SCU (Standard Cargo Units), for `Resource`
+    /// ingredients. `None` for `Item` ingredients (use `count`), or when
+    /// the cost's `CargoQuantity` is a polymorphic-fallback variant the
+    /// generator doesn't recognise. Typical resource ingredients are
     /// well under 1 SCU each (e.g. P4-AR: Aluminum 0.04, Iron 0.02).
     pub quantity_scu: Option<f32>,
-    /// Minimum required quality tier (`0` if no lower bound). Today
-    /// always 0 in SC 4.8.
+    /// Quantity as a discrete unit count, for `Item` ingredients (e.g.
+    /// Hadanite ×13). `None` for `Resource` ingredients (use
+    /// `quantity_scu`).
+    pub count: Option<i32>,
+    /// Minimum required quality tier (`0` if no lower bound).
     pub min_quality: i32,
 }

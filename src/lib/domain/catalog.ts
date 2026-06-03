@@ -9,7 +9,7 @@
 // catalog's second collapse) stays in the catalog page — it's rendering-shaped
 // and the wishlist doesn't need it.
 
-import type { BpView } from "$lib/ipc";
+import type { BpView, Ingredient } from "$lib/ipc";
 
 /** A craftable entity, possibly backed by several interchangeable blueprints
  *  (same `crafted_entity_guid`). Ownership / wishlist = applies to ANY of them. */
@@ -55,6 +55,20 @@ export function formatScu(scu: number | null): string {
   if (scu < 1) return scu.toFixed(2);
   if (scu < 10) return scu.toFixed(1);
   return scu.toFixed(0);
+}
+
+/** Format a recipe ingredient's quantity for display. Resources are bulk
+ *  cargo (SCU); items — the hand-mined gems — are a discrete unit count.
+ *  Returns the amount string and an optional unit label (`null` for items,
+ *  whose `×N` form needs no unit). */
+export function formatIngredientQty(ing: Ingredient): {
+  amount: string;
+  unit: string | null;
+} {
+  if (ing.kind === "item") {
+    return { amount: `×${ing.count ?? "?"}`, unit: null };
+  }
+  return { amount: formatScu(ing.quantity_scu), unit: "SCU" };
 }
 
 /** Fold BPs that craft the same entity into one Craftable. */

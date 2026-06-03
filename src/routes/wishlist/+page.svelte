@@ -9,7 +9,7 @@
     type Craftable,
     nameOf,
     collapseCraftables,
-    formatScu,
+    formatIngredientQty,
     formatCraftTime,
   } from "$lib/domain/catalog";
   import {
@@ -237,10 +237,11 @@
                 <div class="wl-recipe">
                   {#if c.rep.recipe && c.rep.recipe.ingredients.length > 0}
                     <ul class="wl-ingredients">
-                      {#each c.rep.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
+                      {#each c.rep.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
+                        {@const q = formatIngredientQty(ing)}
                         <li>
-                          <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
-                          <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
+                          <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
+                          <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
                           {#if ing.min_quality > 0}<span class="ing-q" title="Minimum required quality">≥ Q{ing.min_quality}</span>{/if}
                         </li>
                       {/each}

@@ -11,7 +11,7 @@
     variantSuffix,
     collapseCraftables,
     formatCraftTime,
-    formatScu,
+    formatIngredientQty,
   } from "$lib/domain/catalog";
   import {
     data,
@@ -498,10 +498,11 @@
                               <!-- Composite key with index: some recipes legitimately list
                                    the same resource GUID twice (different piles / qualities),
                                    so the bare GUID isn't unique. -->
-                              {#each bp.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
+                              {#each bp.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
+                                {@const q = formatIngredientQty(ing)}
                                 <li class="ingredient">
-                                  <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
-                                  <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
+                                  <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
+                                  <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
                                   {#if ing.min_quality > 0}
                                     <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
                                   {/if}
@@ -558,10 +559,11 @@
                       <div class="recipe-panel">
                         {#if bundle.recipe && bundle.recipe.ingredients.length > 0}
                           <ul class="ingredients">
-                            {#each bundle.recipe.ingredients as ing, i (`${ing.resource_guid}|${i}`)}
+                            {#each bundle.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
+                              {@const q = formatIngredientQty(ing)}
                               <li class="ingredient">
-                                <span class="ing-qty">{formatScu(ing.quantity_scu)} <span class="ing-unit">SCU</span></span>
-                                <span class="ing-name">{ing.resource_name ?? "Unknown resource"}</span>
+                                <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
+                                <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
                                 {#if ing.min_quality > 0}
                                   <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
                                 {/if}
