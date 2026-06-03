@@ -44,7 +44,7 @@ pub(crate) struct AppState {
     db: OnceCell<DbPool>,
     /// Cached result of the last `scan_log_history` so `apply_log_import`
     /// doesn't re-read the ~900 backup logs. Cleared after a successful apply.
-    pub(crate) import_scan: std::sync::Mutex<Vec<crate::import::ScannedIdentity>>,
+    pub(crate) import_scan: std::sync::Mutex<Vec<crate::sensors::import::ScannedIdentity>>,
     /// Resolved active RSI handle, cached once. The launcher store only persists
     /// the identity when "Remember Me" is checked; this falls back to the live
     /// `Game.log`, the last-active handle, or a sole known account so the

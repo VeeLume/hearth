@@ -4,7 +4,8 @@
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri_specta::{Builder, collect_commands};
 
-use crate::{commands, import, live_sync, settings};
+use crate::sensors::import;
+use crate::{commands, live_sync, settings};
 
 /// Single source of truth for the IPC command list. Used both by
 /// `run()` at app startup and by the `export-bindings` binary so the

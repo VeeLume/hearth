@@ -4,7 +4,8 @@
 
 use tauri::Manager;
 
-use crate::{identity, live_sync, sensing};
+use crate::sensors::live as sensing;
+use crate::{identity, live_sync};
 
 use super::ipc::{ipc_builder, typescript_exporter};
 use super::paths::app_data_root;

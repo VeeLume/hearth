@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use hearth_core::{Platform, RecordId};
 
 use crate::error::AppError;
-use crate::{AppState, app_data_root, bp_resolve, sensors};
+use crate::{AppState, app_data_root};
+
+use super::resolve;
 
 /// One RSI identity discovered across the session logs — a `(account_hint else
 /// handle)` group. Cached between `scan_log_history` and `apply_log_import` so
@@ -67,11 +69,11 @@ pub(crate) struct ImportResult {
 /// `logbackups/*.log`.
 fn session_log_files(channel_dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let live = sensors::game_log_path(channel_dir);
+    let live = super::game_log_path(channel_dir);
     if live.exists() {
         files.push(live);
     }
-    if let Ok(entries) = std::fs::read_dir(sensors::log_backups_dir(channel_dir)) {
+    if let Ok(entries) = std::fs::read_dir(super::log_backups_dir(channel_dir)) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("log") {
@@ -89,7 +91,7 @@ fn session_log_files(channel_dir: &std::path::Path) -> Vec<PathBuf> {
 struct CachedScan {
     mtime: i64,
     len: u64,
-    summary: sensors::SessionSummary,
+    summary: super::SessionSummary,
 }
 
 /// Per-file scan cache (`<file path> → cached summary`). Lets a re-scan reuse
@@ -128,16 +130,16 @@ fn file_mtime_secs(meta: &std::fs::Metadata) -> i64 {
 /// files in parallel across cores, reusing cached summaries for unchanged
 /// backups; the live `Game.log` is always re-parsed (and never cached). Rebuilds
 /// + persists the cache from this scan, which prunes deleted backups.
-fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::SessionSummary> {
+fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<super::SessionSummary> {
     use rayon::prelude::*;
 
     let files = session_log_files(channel_dir);
-    let live = sensors::game_log_path(channel_dir);
+    let live = super::game_log_path(channel_dir);
     let cache = load_scan_cache();
 
     // Per file: (summary, optional (key, entry) to persist). `None` entry = the
     // live Game.log (don't cache). A cache hit re-emits the existing entry.
-    let scanned: Vec<(sensors::SessionSummary, Option<(String, CachedScan)>)> = files
+    let scanned: Vec<(super::SessionSummary, Option<(String, CachedScan)>)> = files
         .par_iter()
         .filter_map(|path| {
             let meta = std::fs::metadata(path).ok()?;
@@ -167,7 +169,7 @@ fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::Session
             }
 
             let file = std::fs::File::open(path).ok()?;
-            let summary = sensors::summarize_session(std::io::BufReader::new(file));
+            let summary = super::summarize_session(std::io::BufReader::new(file));
             let entry = (!is_live).then(|| {
                 (
                     key,
@@ -198,7 +200,7 @@ fn summarize_all_sessions(channel_dir: &std::path::Path) -> Vec<sensors::Session
 /// `accountId` when present (so renames fold together) else by handle. PTU /
 /// test-shard sessions are excluded — those scopes wipe, so importing their
 /// history is pointless.
-fn group_identities(summaries: Vec<sensors::SessionSummary>) -> Vec<ScannedIdentity> {
+fn group_identities(summaries: Vec<super::SessionSummary>) -> Vec<ScannedIdentity> {
     let mut groups: HashMap<String, ScannedIdentity> = HashMap::new();
     for s in summaries {
         if s.platform != Some(Platform::Prod) {
@@ -316,7 +318,7 @@ pub(crate) async fn apply_log_import(
             "no scan to apply — run scan_log_history first".into(),
         ));
     }
-    let name_index = bp_resolve::build_name_index(state.catalog().await?);
+    let name_index = resolve::build_name_index(state.catalog().await?);
     let db = state.db().await?;
 
     let mut accounts_touched = 0u32;
@@ -362,7 +364,7 @@ pub(crate) async fn apply_log_import(
         // Mark blueprints owned in the prod scope (history is prod-only).
         let scope = hearth_storage::Scope::new(Platform::Prod, account_id);
         for name in &identity.blueprint_names {
-            match bp_resolve::resolve_blueprint_guids(&name_index, name) {
+            match resolve::resolve_blueprint_guids(&name_index, name) {
                 Some(guids) => {
                     for guid in guids {
                         let already = hearth_storage::get_owned(db, scope, guid)

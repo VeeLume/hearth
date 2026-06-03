@@ -10,7 +10,9 @@ use hearth_core::Platform;
 use tauri::{Emitter, Manager};
 
 use crate::settings::{SENSOR_ENABLED, read_bool_setting};
-use crate::{AppState, bp_resolve, emit_ownership_changed, notify, plural, preview_names, sensors};
+use crate::{AppState, emit_ownership_changed, notify, plural, preview_names};
+
+use super::resolve;
 
 /// Payload of the `blueprints-sensed` event — the per-poll data-refresh signal
 /// telling the UI which blueprints were auto-marked (or failed to resolve).
@@ -38,11 +40,11 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
         // Needs the install (for the log path + the active platform to guard
         // against) and the catalog (for name → guid resolution).
         let (log_path, active_platform) = match state.discovery().await {
-            Ok(d) => (sensors::game_log_path(&d.install.root), d.platform),
+            Ok(d) => (super::game_log_path(&d.install.root), d.platform),
             Err(_) => return, // no install → nothing to sense
         };
         let name_index = match state.catalog().await {
-            Ok(catalog) => bp_resolve::build_name_index(catalog),
+            Ok(catalog) => resolve::build_name_index(catalog),
             Err(_) => return,
         };
         // The active handle to pollution-guard against. Uses the same fallback
@@ -58,7 +60,7 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
         };
 
         tracing::info!(path = %log_path.display(), "Game.log sensor started");
-        let mut tailer = sensors::GameLogTailer::new(log_path);
+        let mut tailer = super::GameLogTailer::new(log_path);
         // Session header carried across polls (the handle/platform are logged
         // once near the top; the first poll backfills the whole file).
         let mut sensed_platform: Option<Platform> = None;
@@ -96,13 +98,13 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
             let mut unresolved: Vec<String> = Vec::new();
             for ev in events {
                 match ev {
-                    sensors::SensedEvent::SessionPlatform(p) => sensed_platform = Some(p),
-                    sensors::SensedEvent::SessionHandle(h) => sensed_handle = Some(h),
+                    super::SensedEvent::SessionPlatform(p) => sensed_platform = Some(p),
+                    super::SensedEvent::SessionHandle(h) => sensed_handle = Some(h),
                     // accountId isn't part of the live guard (the live session
                     // is always the active account by definition); it's used by
                     // the history import to group renamed-account sessions.
-                    sensors::SensedEvent::SessionAccountId(_) => {}
-                    sensors::SensedEvent::BlueprintReceived { name } => {
+                    super::SensedEvent::SessionAccountId(_) => {}
+                    super::SensedEvent::BlueprintReceived { name } => {
                         // Pollution guard: same platform AND same handle as
                         // the active account, else this log isn't ours to act on.
                         let guard_ok = sensed_platform == Some(active_platform)
@@ -117,7 +119,7 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
                             );
                             continue;
                         }
-                        match bp_resolve::resolve_blueprint_guids(&name_index, &name) {
+                        match resolve::resolve_blueprint_guids(&name_index, &name) {
                             Some(guids) => to_mark.push((name, guids.clone())),
                             None => unresolved.push(name),
                         }

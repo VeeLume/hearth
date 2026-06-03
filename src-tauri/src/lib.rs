@@ -8,10 +8,10 @@
 //! - [`commands`] — the Tauri IPC command handlers (the adapter boundary),
 //!   grouped by domain.
 //! - the remaining modules are the domains: SC reference data ([`sc_loader`]),
-//!   Game.log sensing ([`sensors`] + [`sensing`] + [`import`]), RSI identity
-//!   ([`identity`]), live sync ([`live_sync`]), preferences ([`settings`]),
-//!   langpatch export ([`export`]), notifications ([`notify`]), and the shared
-//!   error type ([`error`]).
+//!   Game.log sensing ([`sensors`]), RSI identity ([`identity`]), live sync
+//!   ([`live_sync`]), preferences ([`settings`]), langpatch export
+//!   ([`export`]), notifications ([`notify`]), and the shared error type
+//!   ([`error`]).
 
 mod app;
 
@@ -22,11 +22,8 @@ pub mod notify;
 pub mod sc_loader;
 pub mod sensors;
 
-mod bp_resolve;
 mod commands;
-mod import;
 mod live_sync;
-mod sensing;
 mod settings;
 
 // Public API — consumed by the `export-bindings` binary, `main.rs`, and the

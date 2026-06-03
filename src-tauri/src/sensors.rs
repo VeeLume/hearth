@@ -5,19 +5,29 @@
 //!
 //! # Shape
 //!
-//! - [`parse`] — pure, per-line recognisers (the format-fragile core, fully
-//!   unit-tested against real log samples).
-//! - [`tailer`] — the I/O layer that reads a `Game.log` into
-//!   [`SensedEvent`]s: whole-file [`summarize_session`] / [`scan_reader`] and
-//!   the incremental [`GameLogTailer`].
+//! The format-fragile mechanism (kept small so a log-format break is a local
+//! fix):
+//! - [`parse`] — pure, per-line recognisers (fully unit-tested against real
+//!   log samples).
+//! - [`tailer`] — the I/O layer that reads a `Game.log` into [`SensedEvent`]s:
+//!   whole-file [`summarize_session`] / [`scan_reader`] and the incremental
+//!   [`GameLogTailer`].
 //!
-//! Wiring into `AppState` (resolve blueprint name → guid via the catalog,
-//! pollution-guard the session against the active account + platform, then
-//! mark owned) lives with the commands — this module only turns log bytes
-//! into [`SensedEvent`]s.
+//! The app-side consumers that wire the mechanism to `AppState`, the DB, the
+//! catalog name index, and the notification funnel:
+//! - [`live`] — the live polling task that auto-marks blueprints owned during
+//!   play (pollution-guarded against the active account + platform).
+//! - [`import`] — the log-history import (scan backups → group identities →
+//!   mark owned), plus its Tauri commands.
+//! - [`resolve`] — resolve a received-blueprint display name to its catalog
+//!   `blueprint_record_guid`s (shared by `live` and `import`).
 
 pub mod parse;
 pub mod tailer;
+
+pub(crate) mod import;
+pub(crate) mod live;
+pub(crate) mod resolve;
 
 pub use parse::SensedEvent;
 pub use tailer::{GameLogTailer, SessionSummary, scan_reader, summarize_session};
