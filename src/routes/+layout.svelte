@@ -43,13 +43,26 @@
     if (centerOpen) markAllRead();
   }
 
+  // Cold-start resilience (mirrors Onboarding): `active_scope` needs the db
+  // pool warmed, so the first call can transiently fail before warmup settles.
+  // Retry a few times before showing the error chip; a genuine NoInstall is
+  // terminal. Also invoked on `active-scope-changed`, where it succeeds on the
+  // first attempt. While retrying, the sidebar stays on its "Loading…" state.
   async function loadScope() {
-    const result = await commands.activeScope();
-    if (result.status === "ok") {
-      scope = result.data;
-      scopeError = null;
-    } else {
-      scopeError = errText(result.error);
+    const RETRIES = 5;
+    const DELAY_MS = 300;
+    for (let attempt = 0; attempt <= RETRIES; attempt++) {
+      const result = await commands.activeScope();
+      if (result.status === "ok") {
+        scope = result.data;
+        scopeError = null;
+        return;
+      }
+      if (result.error.kind === "NoInstall" || attempt === RETRIES) {
+        scopeError = errText(result.error);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, DELAY_MS));
     }
   }
 

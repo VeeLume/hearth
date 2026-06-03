@@ -13,17 +13,50 @@
   let step = $state(0);
   let scope = $state<ActiveScope | null>(null);
   let scopeError = $state<string | null>(null);
+  let noInstall = $state(false);
   let verifying = $state(false);
   let settings = $state<AppSettings | null>(null);
   let showConsent = $state(false); // inline ToS consent for live sync
   const onlineEnabled = $derived(settings?.online_enabled ?? true);
 
-  onMount(async () => {
-    const [s, set] = await Promise.all([commands.activeScope(), commands.getSettings()]);
-    if (s.status === "ok") scope = s.data;
-    else scopeError = errText(s.error);
-    if (set.status === "ok") settings = set.data;
+  onMount(() => {
+    loadSettings();
+    loadScope();
   });
+
+  async function loadSettings() {
+    const set = await commands.getSettings();
+    if (set.status === "ok") settings = set.data;
+  }
+
+  // Cold-start resilience: `active_scope` needs the db pool warmed, so the very
+  // first call can transiently fail (Storage/Internal) before warmup settles.
+  // Retry a few times before surfacing an error, and treat a genuine "no SC
+  // install" (NoInstall) as terminal rather than spinning on it. While retrying
+  // the UI stays on its "Looking for your account…" state.
+  async function loadScope() {
+    const RETRIES = 5;
+    const DELAY_MS = 300;
+    for (let attempt = 0; attempt <= RETRIES; attempt++) {
+      const s = await commands.activeScope();
+      if (s.status === "ok") {
+        scope = s.data;
+        scopeError = null;
+        noInstall = false;
+        return;
+      }
+      if (s.error.kind === "NoInstall") {
+        noInstall = true;
+        scopeError = null;
+        return;
+      }
+      if (attempt < RETRIES) {
+        await new Promise((r) => setTimeout(r, DELAY_MS));
+      } else {
+        scopeError = errText(s.error);
+      }
+    }
+  }
 
   // Best-effort: capture the immutable RSI anchors (citizen record) by scraping
   // the public profile. Only ever called when the user leaves the account step
@@ -136,11 +169,16 @@
             </p>
           </div>
         {/if}
-      {:else if scopeError}
+      {:else if noInstall}
         <p class="muted">
           No Star Citizen install detected yet. Hearth works best with SC installed
           and the launcher signed in — you can still look around, and it'll pick up
           your account once it's there.
+        </p>
+      {:else if scopeError}
+        <p class="muted">
+          Couldn't load your account ({scopeError}). Hearth will keep trying in the
+          background — restarting usually clears it if it persists.
         </p>
       {:else}
         <p class="muted">Looking for your account…</p>
