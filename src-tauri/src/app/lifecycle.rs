@@ -23,14 +23,19 @@ fn spawn_warmup(handle: tauri::AppHandle) {
         // Discovery first because catalog depends on it. Catalog + db
         // can then run concurrently.
         if state.discovery().await.is_ok() {
-            let _ = tokio::join!(state.catalog(), state.db());
+            let (_, db) = tokio::join!(state.catalog(), state.db());
+            if let Err(e) = db {
+                tracing::warn!(error = %e, "warmup: db init failed");
+            }
             // Seed the langpatch export so a current file exists before the
             // first ownership toggle (best-effort; logs on failure).
             state.refresh_owned_export().await;
         } else {
             // No install: at least try the DB so personal-state queries
             // get a clean DB error instead of a slow no-pool wait.
-            let _ = state.db().await;
+            if let Err(e) = state.db().await {
+                tracing::warn!(error = %e, "warmup: db init failed (no install)");
+            }
         }
     });
 }

@@ -33,10 +33,14 @@ pub(crate) async fn active_scope(
     state: tauri::State<'_, AppState>,
 ) -> Result<ActiveScope, AppError> {
     let (platform, channel) = {
-        let d = state.discovery().await?;
+        let d = state.discovery().await.inspect_err(|e| {
+            tracing::warn!(error = %e, "active_scope: discovery failed (sidebar/onboarding will show \"no account\")");
+        })?;
         (d.platform, d.channel.display_name().to_string())
     };
-    let account = state.active_account().await?;
+    let account = state.active_account().await.inspect_err(|e| {
+        tracing::warn!(error = %e, "active_scope: account resolution failed (sidebar/onboarding will show \"no account\")");
+    })?;
     Ok(ActiveScope {
         platform,
         channel,

@@ -108,9 +108,15 @@ impl AppState {
     pub(crate) async fn db(&self) -> Result<&DbPool, AppError> {
         self.db
             .get_or_try_init(|| async {
-                hearth_storage::open(&db_path())
-                    .await
-                    .map_err(|e| AppError::Storage(format!("{e:#}")))
+                let path = db_path();
+                hearth_storage::open(&path).await.map_err(|e| {
+                    // The OnceCell does NOT cache this failure, so a later call
+                    // (e.g. after a WebView reload) retries the init. Log it —
+                    // it is otherwise swallowed by every startup consumer and
+                    // surfaces only as the generic "no install" onboarding copy.
+                    tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "db pool init failed (will retry on next call)");
+                    AppError::Storage(format!("{e:#}"))
+                })
             })
             .await
     }
@@ -186,7 +192,10 @@ impl AppState {
         let db = self.db().await?;
         hearth_storage::upsert_account_by_handle(db, &handle)
             .await
-            .map_err(|e| AppError::Storage(format!("{e:#}")))
+            .map_err(|e| {
+                tracing::warn!(handle = %handle, error = %format!("{e:#}"), "active account upsert failed");
+                AppError::Storage(format!("{e:#}"))
+            })
     }
 
     pub(crate) async fn active_scope(&self) -> Result<Scope, AppError> {
