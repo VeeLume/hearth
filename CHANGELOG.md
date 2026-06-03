@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-03
+
+### Fixed
+
+- **Recipes now list hand-mined ingredients.** Crafting recipes that need hand-mined gems (e.g. Hadanite) or other item-based ingredients previously showed only their ship-mined ore resources — the item costs were silently dropped. Recipes now show both: resources with their SCU amount and items with a unit count (`×N`).
+
+## [0.1.1] - 2026-06-03
+
+### Fixed
+
+- Account setup on a cold first launch could hit a race in the local store; the upsert is now race-safe.
+- The active account scope now retries on a cold start instead of failing, and scope/database errors are no longer mislabeled as something else.
+
+### Changed
+
+- Scope and database errors that were previously swallowed are now written to the log, making first-launch issues easier to diagnose.
+
 ## [0.1.0] - 2026-06-03
 
 First public alpha — a personal, offline-first blueprint / mission / wishlist tracker for Star Citizen.
@@ -23,5 +40,7 @@ First public alpha — a personal, offline-first blueprint / mission / wishlist 
 - **Offline mode** — a single *Online features* switch disables all network use while leaving local tracking fully working.
 - **First-launch onboarding** and **auto-update** (signed; checks GitHub Releases on launch, skipped in offline mode).
 
-[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/VeeLume/hearth/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/VeeLume/hearth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VeeLume/hearth/releases/tag/v0.1.0

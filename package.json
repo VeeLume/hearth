@@ -1,6 +1,6 @@
 {
   "name": "hearth",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Star Citizen crafting / blueprint / mission tracker",
   "type": "module",
   "scripts": {
