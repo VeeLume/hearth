@@ -9,7 +9,7 @@
 // catalog's second collapse) stays in the catalog page — it's rendering-shaped
 // and the wishlist doesn't need it.
 
-import type { BpView } from "$lib/bindings";
+import type { BpView } from "$lib/ipc";
 
 /** A craftable entity, possibly backed by several interchangeable blueprints
  *  (same `crafted_entity_guid`). Ownership / wishlist = applies to ANY of them. */

@@ -5,7 +5,7 @@
 // it can also be re-opened from Settings. Finishing or skipping marks the
 // setting so it doesn't reappear on the next launch.
 
-import { commands } from "$lib/bindings";
+import { commands } from "$lib/ipc";
 
 let _open = $state(false);
 let _checked = false;

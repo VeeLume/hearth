@@ -6,7 +6,7 @@
 // (Toasts.svelte) and the persistent notification center (NotificationCenter
 // .svelte). Session-memory only — cleared on restart, no DB (alpha decision).
 
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, EVENTS, type UnlistenFn } from "$lib/ipc";
 
 export type NotifLevel = "info" | "success" | "warning" | "error";
 
@@ -91,7 +91,7 @@ export function isSticky(level: NotifLevel): boolean {
 
 /** Subscribe to backend `notify` events. Call once, in the root layout. */
 export function listenForNotifications(): Promise<UnlistenFn> {
-  return listen<NotifPayload>("notify", (event) => {
+  return listen<NotifPayload>(EVENTS.notify, (event) => {
     notify(event.payload);
   });
 }

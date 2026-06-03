@@ -9,7 +9,7 @@
 import { check } from "@tauri-apps/plugin-updater";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { commands } from "$lib/bindings";
+import { commands } from "$lib/ipc";
 
 export async function checkForUpdates(): Promise<void> {
   try {

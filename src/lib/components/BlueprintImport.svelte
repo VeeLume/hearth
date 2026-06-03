@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { bpImport, runImport } from "$lib/importStore.svelte";
+  import { bpImport, runImport } from "$lib/state/importStore.svelte";
 
-  // One-click view over the shared import store ($lib/importStore.svelte). Same
+  // One-click view over the shared import store ($lib/state/importStore.svelte). Same
   // action onboarding uses — scan + auto-map + apply, in the background, with a
   // notification when done.
 </script>

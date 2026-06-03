@@ -6,7 +6,7 @@
   // path-aware message plus a "may take longer" note. Pages with a quick
   // non-SC load (e.g. accounts) pass `message` for a plain labelled spinner.
   import { onMount } from "svelte";
-  import { commands, type LoadTier } from "$lib/bindings";
+  import { commands, type LoadTier } from "$lib/ipc";
 
   let { message }: { message?: string } = $props();
 

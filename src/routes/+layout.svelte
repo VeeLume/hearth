@@ -1,22 +1,27 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { page } from "$app/state";
-  import { commands, type ActiveScope } from "$lib/bindings";
+  import {
+    commands,
+    errText,
+    onActiveScopeChanged,
+    type ActiveScope,
+    type UnlistenFn,
+  } from "$lib/ipc";
   import { primaryNav, futureNav } from "$lib/nav";
-  import Toasts from "$lib/Toasts.svelte";
-  import NotificationCenter from "$lib/NotificationCenter.svelte";
-  import { notifications, listenForNotifications, markAllRead } from "$lib/notifications.svelte";
+  import Toasts from "$lib/components/Toasts.svelte";
+  import NotificationCenter from "$lib/components/NotificationCenter.svelte";
+  import { notifications, listenForNotifications, markAllRead } from "$lib/state/notifications.svelte";
   import {
     ensureBlueprints,
     ensureOwnership,
     ensureMissions,
     ensureGrantedBy,
     listenForOwnershipChanges,
-  } from "$lib/data.svelte";
-  import Onboarding from "$lib/Onboarding.svelte";
-  import { onboarding, maybeStart } from "$lib/onboardingStore.svelte";
-  import { maybeStartupImport } from "$lib/importStore.svelte";
+  } from "$lib/state/data.svelte";
+  import Onboarding from "$lib/components/Onboarding.svelte";
+  import { onboarding, maybeStart } from "$lib/state/onboardingStore.svelte";
+  import { maybeStartupImport } from "$lib/state/importStore.svelte";
   import { checkForUpdates } from "$lib/updater";
   import "../app.css";
 
@@ -43,7 +48,7 @@
       scope = result.data;
       scopeError = null;
     } else {
-      scopeError = `${result.error.kind}: ${result.error.message}`;
+      scopeError = errText(result.error);
     }
   }
 
@@ -63,7 +68,7 @@
     // Re-read the active scope when it changes behind our back — e.g. the
     // startup rename check auto-applied a handle rename, swapping which account
     // row is active.
-    unlistenScope = await listen("active-scope-changed", loadScope);
+    unlistenScope = await onActiveScopeChanged(loadScope);
 
     // Warm the shared data store in the background (one backend load serves
     // all of these) so every page renders instantly when reached — no
