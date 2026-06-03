@@ -7,6 +7,7 @@
   import { formatScu } from "$lib/domain/catalog";
   import Loading from "$lib/components/Loading.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
+  import SyncButton from "$lib/components/SyncButton.svelte";
 
   // Your live resource inventory, read from CIG's backend via the optional
   // resource sync (Settings → Blueprint import → Live resource sync). The page
@@ -126,9 +127,17 @@
       </div>
       <div class="bar-right">
         {#if canSync}
-          <button class="btn" onclick={syncNow} disabled={syncing || !online}>
-            {syncing ? "Syncing…" : "Sync now"}
-          </button>
+          <SyncButton
+            onclick={syncNow}
+            syncing={syncing}
+            disabled={!inventoryOn || !online}
+            title={!inventoryOn
+              ? "Enable resource sync in Settings to use this"
+              : !online
+                ? "Offline mode is on — turn it off in Settings"
+                : "Sync your resource inventory from your account"}
+            label="Sync resources"
+          />
         {/if}
       </div>
     </div>
@@ -209,24 +218,6 @@
   .synced.muted {
     color: var(--faint);
     font-style: italic;
-  }
-  .btn {
-    padding: 0.35rem 0.8rem;
-    border-radius: 7px;
-    border: 1px solid var(--line);
-    background: var(--panel-2);
-    color: var(--text);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: all 90ms;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--ember-dim);
-    color: var(--ember);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
   .error {
     margin: 0 0.2rem 0.8rem;

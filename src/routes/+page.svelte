@@ -5,6 +5,7 @@
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
+  import SyncButton from "$lib/components/SyncButton.svelte";
   import {
     type Craftable,
     nameOf,
@@ -33,8 +34,15 @@
   const blueprints = $derived(data.blueprints);
   let loading = $state(!(data.blueprintsReady && data.ownershipReady));
   let errorMessage = $state<string | null>(null);
-  // Live-sync button state (the loading screen handles its own path hint).
-  let liveSync = $state<{ available: boolean; enabled: boolean } | null>(null);
+  // Sync-button source state. The button refreshes the owned set from the best
+  // enabled source: authoritative live sync if on, else a game-log scan.
+  let srcs = $state<{
+    liveSyncAvailable: boolean;
+    liveSyncEnabled: boolean;
+    sensorEnabled: boolean;
+  } | null>(null);
+  const useLiveSync = $derived(!!srcs && srcs.liveSyncAvailable && srcs.liveSyncEnabled);
+  const canSync = $derived(!!srcs && (useLiveSync || srcs.sensorEnabled));
   let syncing = $state(false);
   let query = $state("");
   // Expansion keys for rows currently showing their recipe / variant
@@ -45,14 +53,15 @@
   type Filter = "all" | "owned" | "unowned" | "wantbp" | "wantitem";
   let filter = $state<Filter>("all");
 
-  /** Catalog-side live sync: fetch from the account, then reflect the
-   *  reconciled ownership locally. Result/errors surface via notifications. */
+  /** Refresh the owned set from the best enabled source — authoritative live
+   *  sync if it's on, else a game-log scan. Result/errors surface via
+   *  notifications; the backend's ownership-changed event refreshes the owned
+   *  set (so every sync path behaves the same). */
   async function syncNow() {
     if (syncing) return;
     syncing = true;
-    // Result + errors surface via notifications; the backend's ownership-changed
-    // event refreshes the owned set (so all sync paths behave the same).
-    await commands.liveSyncNow();
+    if (useLiveSync) await commands.liveSyncNow();
+    else await commands.scanLogsNow();
     syncing = false;
   }
 
@@ -186,7 +195,11 @@
     // Doesn't block the (slow) catalog load below.
     commands.getSettings().then((r) => {
       if (r.status === "ok") {
-        liveSync = { available: r.data.live_sync_available, enabled: r.data.live_sync_enabled };
+        srcs = {
+          liveSyncAvailable: r.data.live_sync_available,
+          liveSyncEnabled: r.data.live_sync_enabled,
+          sensorEnabled: r.data.sensor_enabled,
+        };
       }
     });
 
@@ -358,29 +371,16 @@
     bind:value={query}
     disabled={loading}
   />
-  {#if liveSync?.available && liveSync.enabled}
-    <button
-      class="sync-btn"
-      class:syncing
+  {#if canSync}
+    <SyncButton
       onclick={syncNow}
-      disabled={syncing || loading}
-      title="Sync owned blueprints from your account"
-      aria-label="Sync owned blueprints"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M23 4v6h-6" />
-        <path d="M1 20v-6h6" />
-        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-      </svg>
-    </button>
+      {syncing}
+      disabled={loading}
+      title={useLiveSync
+        ? "Sync owned blueprints from your account"
+        : "Scan your game logs for received blueprints"}
+      label="Sync owned blueprints"
+    />
   {/if}
 </PageHeader>
 
@@ -653,37 +653,6 @@
     color: var(--bad);
   }
 
-  /* Catalog live-sync button — only shown when live sync is enabled.
-     (Uses the global `spin` keyframe from app.css.) */
-  .sync-btn {
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 7px;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--muted);
-    cursor: pointer;
-    transition: color 90ms, border-color 90ms;
-  }
-  .sync-btn:hover:not(:disabled) {
-    color: var(--ember);
-    border-color: var(--ember-dim);
-  }
-  .sync-btn:disabled {
-    opacity: 0.5;
-    cursor: progress;
-  }
-  .sync-btn svg {
-    width: 1rem;
-    height: 1rem;
-    display: block;
-  }
-  .sync-btn.syncing svg {
-    animation: spin 0.8s linear infinite;
-  }
   .error .hint {
     color: var(--faint);
     font-size: 0.85rem;

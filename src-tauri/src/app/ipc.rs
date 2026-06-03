@@ -4,7 +4,7 @@
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri_specta::{Builder, collect_commands};
 
-use crate::sensors::import;
+use crate::sensors::scan;
 use crate::{commands, inventory_sync, live_sync, settings};
 
 /// Single source of truth for the IPC command list. Used both by
@@ -28,8 +28,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         commands::accounts::list_accounts_detailed,
         commands::accounts::add_account_alias,
         commands::accounts::merge_accounts,
-        import::scan_log_history,
-        import::apply_log_import,
+        scan::scan_logs_now,
         commands::catalog::predicted_load_tier,
         settings::get_settings,
         settings::set_live_sync,

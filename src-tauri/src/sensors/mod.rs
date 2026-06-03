@@ -14,20 +14,22 @@
 //!   [`GameLogTailer`].
 //!
 //! The app-side consumers that wire the mechanism to `AppState`, the DB, the
-//! catalog name index, and the notification funnel:
+//! catalog name index, and the notification funnel — one **Game.log tracking**
+//! source (toggle + startup catch-up + manual "Scan now"):
 //! - [`live`] — the live polling task that auto-marks blueprints owned during
-//!   play (pollution-guarded against the active account + platform).
-//! - [`import`] — the log-history import (scan backups → group identities →
-//!   mark owned), plus its Tauri commands.
+//!   play (pollution-guarded against the active account + platform), and kicks
+//!   off the startup catch-up.
+//! - [`scan`] — the multi-file catch-up scan (live `Game.log` + `logbackups/`)
+//!   for the active account, plus the `scan_logs_now` command.
 //! - [`resolve`] — resolve a received-blueprint display name to its catalog
-//!   `blueprint_record_guid`s (shared by `live` and `import`).
+//!   `blueprint_record_guid`s (shared by `live` and `scan`).
 
 pub mod parse;
 pub mod tailer;
 
-pub(crate) mod import;
 pub(crate) mod live;
 pub(crate) mod resolve;
+pub(crate) mod scan;
 
 pub use parse::SensedEvent;
 pub use tailer::{GameLogTailer, SessionSummary, scan_reader, summarize_session};

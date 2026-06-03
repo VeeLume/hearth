@@ -37,7 +37,8 @@ pub(crate) struct AppSettings {
     live_inventory_enabled: bool,
     /// Whether the one-time ToS consent has been acknowledged.
     live_sync_consented: bool,
-    /// Live Game.log sensing (auto-mark BPs received during play). Default on.
+    /// Game-log tracking (startup catch-up + auto-mark BPs received during
+    /// play). Default off — the user opts in.
     sensor_enabled: bool,
     /// Whether the first-launch onboarding has been completed/skipped.
     onboarding_completed: bool,
@@ -67,7 +68,7 @@ async fn read_settings(db: &DbPool) -> Result<AppSettings, AppError> {
         live_sync_enabled: read_bool_setting(db, LIVE_SYNC_ENABLED, false).await?,
         live_inventory_enabled: read_bool_setting(db, LIVE_INVENTORY_ENABLED, false).await?,
         live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
-        sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, true).await?,
+        sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, false).await?,
         onboarding_completed: read_bool_setting(db, ONBOARDING_COMPLETED, false).await?,
         online_enabled: read_bool_setting(db, ONLINE_ENABLED, true).await?,
     })

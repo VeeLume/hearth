@@ -42,9 +42,6 @@ pub(crate) struct AppState {
     data: OnceCell<CookedData>,
     /// SQLite pool, lazily initialized on first DB-needing command.
     db: OnceCell<DbPool>,
-    /// Cached result of the last `scan_log_history` so `apply_log_import`
-    /// doesn't re-read the ~900 backup logs. Cleared after a successful apply.
-    pub(crate) import_scan: std::sync::Mutex<Vec<crate::sensors::import::ScannedIdentity>>,
     /// Resolved active RSI handle, cached once. The launcher store only persists
     /// the identity when "Remember Me" is checked; this falls back to the live
     /// `Game.log`, the last-active handle, or a sole known account so the
@@ -58,7 +55,6 @@ impl AppState {
             discovery: OnceCell::new(),
             data: OnceCell::new(),
             db: OnceCell::new(),
-            import_scan: std::sync::Mutex::new(Vec::new()),
             resolved_handle: OnceCell::new(),
         }
     }

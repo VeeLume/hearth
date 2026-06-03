@@ -86,13 +86,15 @@ the domain modules.
   snapshot cache + `LoadTier` predicates), `cook` (parsed `Datacore` → catalog +
   missions), and the root `build_data` waterfall (processed snapshot → raw extract
   snapshot → full p4k extraction).
-- `sensors/` — **Game.log tailing (format-fragile, kept local on purpose).**
-  `parse` (pure per-line recognisers, unit-tested against real samples) and
+- `sensors/` — **Game.log tracking (format-fragile, kept local on purpose).** One
+  source shaped like the other syncs (toggle + startup catch-up + manual "Scan
+  now"). `parse` (pure per-line recognisers, unit-tested against real samples) and
   `tailer` (whole-file `summarize_session`/`scan_reader` + incremental
   `GameLogTailer`) are the mechanism; `live` (polling task that auto-marks
-  blueprints owned during play, pollution-guarded), `import` (log-history import +
-  its commands), and `resolve` (received-name → catalog guid) are the app-side
-  consumers.
+  blueprints owned during play, pollution-guarded, and kicks off the startup
+  catch-up), `scan` (the cached multi-file catch-up over live + `logbackups/` for
+  the **active** account, plus the `scan_logs_now` command), and `resolve`
+  (received-name → catalog guid) are the app-side consumers.
 - `identity/` — RSI identity. `fetch` (HTTP fetch + parse of the public citizen
   page) and `rename` (startup handle-rename detection via the immutable
   citizen-record anchor).
@@ -112,13 +114,13 @@ the domain modules.
   regenerate via the `export-bindings` binary).
 - `lib/state/*.svelte.ts` — runes state stores: `data` (catalog / missions /
   ownership held once per session, prefetched at startup so navigation never
-  flashes), `notifications`, `importStore`, `onboardingStore`.
+  flashes), `notifications`, `onboardingStore`.
 - `lib/domain/` — pure frontend helpers (`catalog.ts`, `categories.ts`).
-- `lib/components/` — shared components (AccountManager, BlueprintImport, Loading,
+- `lib/components/` — shared components (AccountManager, Loading,
   NotificationCenter, Onboarding, Toasts, …).
-- `routes/` — `+page` (catalog), `missions/`, `wishlist/`, `settings/` (tabbed:
-  Account · Blueprint import · Advanced). The root `+layout` prefetches data and
-  hosts onboarding / toasts / the notification bell.
+- `routes/` — `+page` (catalog), `missions/`, `wishlist/`, `resources/`,
+  `settings/` (tabbed: Account · Tracking · Advanced). The root `+layout`
+  prefetches data and hosts onboarding / toasts / the notification bell.
 
 ## Key conventions
 

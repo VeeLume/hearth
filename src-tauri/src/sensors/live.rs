@@ -59,6 +59,11 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
             }
         };
 
+        // Startup catch-up: mark owned from rotated logbackups for the active
+        // account before live tailing takes over the current Game.log. Self-gated
+        // on the sensor toggle; quiet unless it marked something.
+        super::scan::catch_up(&handle, state.inner()).await;
+
         tracing::info!(path = %log_path.display(), "Game.log sensor started");
         let mut tailer = super::GameLogTailer::new(log_path);
         // Session header carried across polls (the handle/platform are logged
@@ -69,15 +74,15 @@ pub(crate) fn spawn_sensor(handle: tauri::AppHandle) {
 
         loop {
             ticker.tick().await;
-            // Gated by the user setting (default on), checked each tick so the
-            // Settings toggle takes effect within one interval without a restart.
-            // While off we skip the poll entirely; re-enabling backfills whatever
-            // was appended in the meantime.
+            // Gated by the user setting (default off — opt-in), checked each tick
+            // so the Settings toggle takes effect within one interval without a
+            // restart. While off we skip the poll entirely; re-enabling backfills
+            // whatever was appended in the meantime.
             let enabled = match state.db().await {
-                Ok(db) => read_bool_setting(db, SENSOR_ENABLED, true)
+                Ok(db) => read_bool_setting(db, SENSOR_ENABLED, false)
                     .await
-                    .unwrap_or(true),
-                Err(_) => true,
+                    .unwrap_or(false),
+                Err(_) => false,
             };
             if !enabled {
                 continue;

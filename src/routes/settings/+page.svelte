@@ -2,12 +2,15 @@
   import { onMount } from "svelte";
   import { commands, errText, type AppSettings } from "$lib/ipc";
   import AccountManager from "$lib/components/AccountManager.svelte";
-  import BlueprintImport from "$lib/components/BlueprintImport.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import { openOnboarding } from "$lib/state/onboardingStore.svelte";
 
-  let tab = $state<"account" | "import" | "advanced">("account");
+  let tab = $state<"account" | "tracking" | "advanced">("account");
+
+  // ── Live game-log tracking (the sensor) ──────────────────────────────
+  let scanning = $state(false);
+  let lastScan = $state<string | null>(null);
 
   let wiping = $state(false);
   let lastResult = $state<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -92,6 +95,19 @@
     if (!settings) return;
     const r = await commands.setSensor(enabled);
     if (r.status === "ok") settings = r.data;
+    if (enabled) scanLogsNow(); // first scan right away so the toggle does something
+  }
+
+  async function scanLogsNow() {
+    if (scanning) return;
+    scanning = true;
+    lastScan = null;
+    const r = await commands.scanLogsNow();
+    if (r.status === "ok") {
+      const d = r.data;
+      lastScan = `${d.newly_owned} marked${d.unresolved.length ? ` · ${d.unresolved.length} unrecognised` : ""}`;
+    }
+    scanning = false;
   }
 
   async function syncNow() {
@@ -135,31 +151,42 @@
 
 <div class="tabs">
   <button class="tab" class:active={tab === "account"} onclick={() => (tab = "account")}>Account</button>
-  <button class="tab" class:active={tab === "import"} onclick={() => (tab = "import")}>Blueprint import</button>
+  <button class="tab" class:active={tab === "tracking"} onclick={() => (tab = "tracking")}>Tracking</button>
   <button class="tab" class:active={tab === "advanced"} onclick={() => (tab = "advanced")}>Advanced</button>
 </div>
 
 <section class="page">
   {#if tab === "account"}
     <AccountManager />
-  {:else if tab === "import"}
-    <BlueprintImport />
+  {:else if tab === "tracking"}
     {#if settings}
       <div class="card">
-        <h2>Live game-log sensing</h2>
+        <h2>Game-log tracking</h2>
         <p class="muted">
-          While you play, Hearth watches <code>Game.log</code> and marks blueprints
-          owned the moment you receive one (with a toast) — the same ToS-safe local
-          read as the import above, just continuous. Only catches blueprints
-          <em>received</em> during play.
+          Reads your local Star Citizen logs (<code>Game.log</code> + the
+          <code>logbackups/</code> folder) for blueprints you
+          <strong>received</strong> and marks them owned — for your active account.
+          ToS-safe, works offline. It <strong>catches up at startup</strong> and
+          keeps marking blueprints live while you play; press <em>Scan now</em> to
+          re-scan on demand.
+          <br /><strong>Limitation:</strong> it only sees blueprints
+          <em>received</em> in logged sessions — it misses default-unlocked
+          blueprints and any session with no saved log. Persistent-universe sessions
+          only (PTU / test shards skipped).
         </p>
         <div class="row">
           <Switch
             checked={settings.sensor_enabled}
-            label="Live game-log sensing"
+            label="Game-log tracking"
             onchange={(v) => setSensor(v)}
           />
           <span class="switch-label">{settings.sensor_enabled ? "On" : "Off"}</span>
+        </div>
+        <div class="row">
+          <button class="btn" onclick={scanLogsNow} disabled={scanning}>
+            {scanning ? "Scanning…" : "Scan now"}
+          </button>
+          {#if lastScan}<span class="result ok">{lastScan}</span>{/if}
         </div>
       </div>
     {/if}

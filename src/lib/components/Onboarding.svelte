@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
   import { commands, errText, type ActiveScope, type AppSettings } from "$lib/ipc";
   import { finishOnboarding } from "$lib/state/onboardingStore.svelte";
-  import { bpImport, runImport } from "$lib/state/importStore.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
 
@@ -91,6 +90,9 @@
     if (!settings) return;
     const r = await commands.setSensor(enabled);
     if (r.status === "ok") settings = r.data;
+    // Enabling kicks off an immediate catch-up scan so the toggle does something
+    // now (it also catches up on every launch and tails live during play).
+    if (enabled) commands.scanLogsNow();
   }
 
   async function setLiveSync(enabled: boolean) {
@@ -218,16 +220,17 @@
       {#if settings}
         <div class="opt">
           <div class="opt-head">
-            <span class="opt-title">Live game-log sensing</span>
+            <span class="opt-title">Game-log tracking</span>
             <Switch
               checked={settings.sensor_enabled}
-              label="Live game-log sensing"
+              label="Game-log tracking"
               onchange={(v) => setSensor(v)}
             />
           </div>
           <p class="muted">
-            Watches your game log while you play and marks blueprints owned as you
-            receive them. Local, ToS-safe — recommended.
+            Reads your game logs (including past sessions) for blueprints you've
+            received and marks them owned — catching up at startup and live while
+            you play. Local, ToS-safe — recommended.
           </p>
         </div>
 
@@ -297,19 +300,6 @@
             {/if}
           </div>
         {/if}
-
-        <div class="opt">
-          <div class="opt-head">
-            <span class="opt-title">Import past blueprints</span>
-            <button class="btn btn-sm" onclick={() => runImport()} disabled={bpImport.running}>
-              {bpImport.running ? "Importing…" : "Start import"}
-            </button>
-          </div>
-          <p class="muted">
-            Scan your game logs for blueprints you've already received and mark them
-            owned. Runs in the background — you'll get a notification when it's done.
-          </p>
-        </div>
       {/if}
     {/if}
 

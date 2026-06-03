@@ -24,7 +24,6 @@
   import Onboarding from "$lib/components/Onboarding.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
   import { onboarding, maybeStart } from "$lib/state/onboardingStore.svelte";
-  import { maybeStartupImport } from "$lib/state/importStore.svelte";
   import { checkForUpdates } from "$lib/updater";
   import "../app.css";
 
@@ -102,9 +101,8 @@
     // Show first-launch onboarding if it hasn't been completed.
     maybeStart();
 
-    // If sensing is on, quietly catch up on blueprints logged while the app
-    // was closed (now rotated into logbackups/). Fast via the per-file cache.
-    maybeStartupImport();
+    // Startup log catch-up (logbackups → owned for the active account) is now
+    // owned by the backend sensor task; no frontend trigger needed.
 
     // Check GitHub for a newer release (skipped in offline mode). Fire-and-forget.
     checkForUpdates();

@@ -170,26 +170,14 @@ async mergeAccounts(from: RecordId, into: RecordId) : Promise<Result<AccountWith
 }
 },
 /**
- * Scan the install's session logs (live + `logbackups/`) and surface the RSI
- * identities found, grouped by numeric `accountId` (renames fold together).
- * Caches the full scan in-state for [`apply_log_import`].
+ * Manually re-scan all session logs (live + `logbackups/`) for the active
+ * account and mark owned. The "Scan now" button — same role as `live_sync_now` /
+ * `inventory_sync_now`. Always notifies (success even when nothing changed, so the
+ * click has visible feedback).
  */
-async scanLogHistory() : Promise<Result<DiscoveredIdentity[], AppError>> {
+async scanLogsNow() : Promise<Result<ScanResult, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("scan_log_history") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Apply the user's classification of the scanned identities: create / alias
- * accounts and mark their blueprints owned (prod scope). Uses the cached scan
- * from [`scan_log_history`].
- */
-async applyLogImport(choices: ImportChoice[]) : Promise<Result<ImportResult, AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("apply_log_import", { choices }) };
+    return { status: "ok", data: await TAURI_INVOKE("scan_logs_now") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -545,35 +533,6 @@ family_base_name: string | null;
  * crafted item has no recoverable ingredient list.
  */
 recipe: Recipe | null }
-/**
- * A discovered identity surfaced to the UI for classification.
- */
-export type DiscoveredIdentity = { key: string; account_hint: number | null; handles: string[]; session_count: number; blueprint_count: number; 
-/**
- * Best-guess existing account this maps to (handle/alias/hint match).
- */
-suggested_account_id: RecordId | null; 
-/**
- * That account's current handle, for display.
- */
-suggested_handle: string | null }
-/**
- * The UI's decision for one discovered identity.
- */
-export type ImportChoice = { key: string; 
-/**
- * `"existing"` (use `account_id`), `"new"` (create from the identity's
- * primary handle), or `"ignore"`.
- */
-action: string; account_id: RecordId | null }
-/**
- * Summary of an applied import.
- */
-export type ImportResult = { accounts_touched: number; newly_owned: number; 
-/**
- * Blueprint display names that matched no catalog entry (name drift).
- */
-unresolved: string[] }
 /**
  * One ingredient in a [`Recipe`] — either a bulk resource or a discrete
  * item, discriminated by [`Ingredient::kind`].
@@ -959,6 +918,18 @@ export type RecordId = string
  * resolution is a follow-up); `amount` is `None` for engine-calculated rep.
  */
 export type RepRewardView = { faction_guid: string | null; amount: number | null }
+/**
+ * Outcome of one log scan — the Settings echo + notification body.
+ */
+export type ScanResult = { 
+/**
+ * Blueprint records newly flipped to owned this scan.
+ */
+newly_owned: number; 
+/**
+ * Received-blueprint names that matched no catalog entry (name drift / locale).
+ */
+unresolved: string[] }
 /**
  * A typed-currency (scrip) reward on a mission.
  */

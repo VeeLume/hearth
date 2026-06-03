@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Resources page & live resource sync.** A new **Resources** tab lists your in-game resource inventory — materials grouped by name with their total amount, best quality, and an expandable per-quality / per-location breakdown (hand-mined gems like Hadanite show as a `×N` unit count, bulk materials in SCU). It's filled by an optional **live resource sync** that reads your inventory from your RSI account (opt-in, off by default; an unofficial, read-only connection, against Star Citizen's Terms of Service; shares live blueprint sync's one-time consent and the *Online features* switch). Enable it from onboarding or *Settings → Blueprint import*.
 - **Wishlist resource coverage.** Want-items now show whether your synced materials cover their recipe — a have / partial badge per item, plus per-ingredient amount-vs-need, best available quality, and where each material is stored.
 
+### Changed
+
+- **Game-log tracking is now one source, like the syncs.** The separate "Import from game logs" flow has been folded into game-log tracking: a single toggle that catches up from your past logs (`logbackups/`) at startup, keeps marking blueprints live while you play, and offers a **Scan now** button to re-scan on demand — the same toggle / startup / manual-button model as live blueprint and resource sync. Imported history now follows your **active account** (renames included); other accounts catch up the next time you play on them. The multi-account classification screen has been removed. Tracking is now **off by default** — opt in from onboarding or *Settings → Tracking*.
+- **The catalog's sync button now uses your best enabled source.** It appears whenever live blueprint sync *or* game-log tracking is on, and refreshes from live sync when available, otherwise a game-log scan.
+
 ## [0.1.2] - 2026-06-03
 
 ### Fixed
