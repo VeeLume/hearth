@@ -16,7 +16,8 @@
   let noInstall = $state(false);
   let verifying = $state(false);
   let settings = $state<AppSettings | null>(null);
-  let showConsent = $state(false); // inline ToS consent for live sync
+  let showConsent = $state(false); // inline ToS consent for live blueprint sync
+  let showInvConsent = $state(false); // inline ToS consent for live resource sync
   const onlineEnabled = $derived(settings?.online_enabled ?? true);
 
   onMount(() => {
@@ -115,6 +116,31 @@
     showConsent = false;
     await setLiveSync(true);
     commands.liveSyncNow();
+  }
+
+  async function setLiveInventory(enabled: boolean) {
+    if (!settings) return;
+    const r = await commands.setLiveInventory(enabled);
+    if (r.status === "ok") settings = r.data;
+  }
+
+  function toggleLiveInventory() {
+    if (!settings) return;
+    // Shares the one-time ToS consent with live blueprint sync.
+    if (!settings.live_inventory_enabled && !settings.live_sync_consented) {
+      showInvConsent = true;
+      return;
+    }
+    const next = !settings.live_inventory_enabled;
+    setLiveInventory(next).then(() => {
+      if (next) commands.inventorySyncNow(); // first sync; reports via notification
+    });
+  }
+
+  async function acceptInvConsent() {
+    showInvConsent = false;
+    await setLiveInventory(true);
+    commands.inventorySyncNow();
   }
 
   const platformLabel = (p: ActiveScope["platform"]) => (p === "prod" ? "PU" : "PTU");
@@ -233,6 +259,39 @@
                 <div class="consent-actions">
                   <button class="btn btn-sm" onclick={() => (showConsent = false)}>Cancel</button>
                   <button class="btn btn-sm btn-primary" onclick={acceptConsent}>I understand — enable</button>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <div class="opt">
+            <div class="opt-head">
+              <span class="opt-title">Live resource sync <span class="adv">advanced</span></span>
+              <Switch
+                checked={settings.live_inventory_enabled}
+                disabled={!onlineEnabled}
+                label="Live resource sync"
+                onchange={() => toggleLiveInventory()}
+              />
+            </div>
+            <p class="muted">
+              Reads your in-game resource inventory from your CIG account, so the
+              Resources page can show what you have to craft with. Unofficial,
+              read-only, <strong>against SC's Terms of Service</strong> — your own
+              risk.{#if !onlineEnabled}
+                <span class="off-hint"> Turn on Online features above to use this.</span>
+              {/if}
+            </p>
+            {#if showInvConsent}
+              <div class="consent">
+                <p class="muted">
+                  This connects to CIG's servers with your launcher session to read
+                  your resource inventory. Read-only and only your own account — but
+                  against SC's ToS, at your own risk.
+                </p>
+                <div class="consent-actions">
+                  <button class="btn btn-sm" onclick={() => (showInvConsent = false)}>Cancel</button>
+                  <button class="btn btn-sm btn-primary" onclick={acceptInvConsent}>I understand — enable</button>
                 </div>
               </div>
             {/if}

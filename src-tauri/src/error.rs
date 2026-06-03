@@ -18,6 +18,8 @@ pub enum AppError {
     Identity(String),
     #[error("live sync failed: {0}")]
     LiveSync(String),
+    #[error("inventory sync failed: {0}")]
+    Inventory(String),
     #[error("internal error: {0}")]
     Internal(String),
 }

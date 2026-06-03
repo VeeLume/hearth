@@ -17,7 +17,9 @@
     ensureOwnership,
     ensureMissions,
     ensureGrantedBy,
+    ensureInventory,
     listenForOwnershipChanges,
+    listenForInventoryChanges,
   } from "$lib/state/data.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
@@ -36,6 +38,7 @@
   let centerOpen = $state(false);
   let unlisten: UnlistenFn | undefined;
   let unlistenOwnership: UnlistenFn | undefined;
+  let unlistenInventory: UnlistenFn | undefined;
   let unlistenScope: UnlistenFn | undefined;
 
   function toggleCenter() {
@@ -69,6 +72,7 @@
   onDestroy(() => {
     unlisten?.();
     unlistenOwnership?.();
+    unlistenInventory?.();
     unlistenScope?.();
   });
 
@@ -79,6 +83,8 @@
     // Refresh the shared owned set whenever the backend changes it behind our
     // back (live sync reconcile, sensor auto-mark).
     unlistenOwnership = await listenForOwnershipChanges();
+    // Refresh the shared inventory when a live inventory sync reconciles it.
+    unlistenInventory = await listenForInventoryChanges();
     // Re-read the active scope when it changes behind our back — e.g. the
     // startup rename check auto-applied a handle rename, swapping which account
     // row is active.
@@ -91,6 +97,7 @@
     ensureOwnership();
     ensureMissions();
     ensureGrantedBy();
+    ensureInventory();
 
     // Show first-launch onboarding if it hasn't been completed.
     maybeStart();

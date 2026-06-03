@@ -5,7 +5,7 @@
 use tauri::Manager;
 
 use crate::sensors::live as sensing;
-use crate::{identity, live_sync};
+use crate::{identity, inventory_sync, live_sync};
 
 use super::ipc::{ipc_builder, typescript_exporter};
 use super::paths::app_data_root;
@@ -110,6 +110,8 @@ pub fn run() {
             identity::spawn_rename_check(app.handle().clone());
             #[cfg(feature = "live-sync")]
             live_sync::spawn_live_sync(app.handle().clone());
+            #[cfg(feature = "live-sync")]
+            inventory_sync::spawn_inventory_sync(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

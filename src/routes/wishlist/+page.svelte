@@ -11,7 +11,13 @@
     collapseCraftables,
     formatIngredientQty,
     formatCraftTime,
+    formatScu,
   } from "$lib/domain/catalog";
+  import {
+    coverageFor,
+    type RecipeCoverage,
+    type IngredientCoverage,
+  } from "$lib/domain/inventory";
   import {
     data,
     owned,
@@ -21,6 +27,7 @@
     ensureBlueprints,
     ensureOwnership,
     ensureGrantedBy,
+    ensureInventory,
     toggleWishlist,
   } from "$lib/state/data.svelte";
 
@@ -49,10 +56,31 @@
       ensureBlueprints(),
       ensureOwnership(),
       ensureGrantedBy(),
+      ensureInventory(),
     ]);
     if (bpErr) errorMessage = bpErr;
     loading = false;
   });
+
+  // Want-item resource coverage — "do I have the mats?". Joins each craftable's
+  // recipe against the live inventory (keyed by CRC in the shared store). Only
+  // meaningful once a resource sync has populated the inventory.
+  const hasInventory = $derived(data.inventory.length > 0);
+  function coverage(c: Craftable): RecipeCoverage | null {
+    return coverageFor(c.rep.recipe, data.inventoryByCrc);
+  }
+  /** Short have-mats summary for the row chip. */
+  function coverageSummary(cov: RecipeCoverage): { label: string; ready: boolean } {
+    if (cov.craftable) return { label: "✓ have materials", ready: true };
+    const have = cov.ingredients.filter((i) => i.satisfied).length;
+    return { label: `materials ${have}/${cov.ingredients.length}`, ready: false };
+  }
+  /** Per-ingredient "have vs need" label for the expanded recipe. */
+  function haveLabel(ic: IngredientCoverage): string {
+    if (!ic.tracked) return "untracked";
+    if (ic.ing.kind === "item") return `have ×${ic.haveCount ?? 0}`;
+    return `have ${formatScu(ic.haveScu)} SCU`;
+  }
 
   /** Missions that grant any of a craftable's interchangeable BPs, deduped by
    *  mission and sorted by title — the ⚐ fulfilment answer. */
@@ -208,13 +236,23 @@
           {#each wantedItem as c (c.entityKey)}
             {@const isOwned = craftableOwned(c)}
             {@const showRecipe = isOwned && expandedRecipes.has(c.entityKey)}
+            {@const cov = coverage(c)}
+            {@const csum = cov && hasInventory ? coverageSummary(cov) : null}
             <li class="wl-row item-row">
               <div class="wl-main">
                 <span class="wl-name">{nameOf(c.rep)}</span>
                 <span class="wl-cat">{categoryLabel(c.rep)}</span>
+                {#if csum}
+                  <span
+                    class="mats"
+                    class:ready={csum.ready}
+                    title="Whether your synced resource inventory covers this recipe"
+                  >{csum.label}</span>
+                {/if}
                 {#if isOwned}
                   <button
                     class="fulfil ready expand"
+                    class:left-auto={!csum}
                     title="You own the blueprint — craft it in-game. Click to see the recipe."
                     onclick={() => toggleRecipe(c.entityKey)}
                   >
@@ -222,7 +260,7 @@
                     <span class="chev" class:open={showRecipe} aria-hidden="true">▸</span>
                   </button>
                 {:else}
-                  <span class="fulfil soon" title="Acquire the blueprint, or get a community member to craft it (v2)">
+                  <span class="fulfil soon" class:left-auto={!csum} title="Acquire the blueprint, or get a community member to craft it (v2)">
                     needs BP · or community craft · soon
                   </span>
                 {/if}
@@ -235,18 +273,23 @@
 
               {#if showRecipe}
                 <div class="wl-recipe">
-                  {#if c.rep.recipe && c.rep.recipe.ingredients.length > 0}
+                  {#if cov && cov.ingredients.length > 0}
                     <ul class="wl-ingredients">
-                      {#each c.rep.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
-                        {@const q = formatIngredientQty(ing)}
-                        <li>
+                      {#each cov.ingredients as ic, i (`${ic.ing.guid}|${i}`)}
+                        {@const q = formatIngredientQty(ic.ing)}
+                        <li class:short={hasInventory && ic.tracked && !ic.satisfied}>
                           <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
-                          <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
-                          {#if ing.min_quality > 0}<span class="ing-q" title="Minimum required quality">≥ Q{ing.min_quality}</span>{/if}
+                          <span class="ing-name">{ic.ing.name ?? "Unknown ingredient"}</span>
+                          {#if ic.ing.min_quality > 0}<span class="ing-q" title="Minimum required quality">≥ Q{ic.ing.min_quality}</span>{/if}
+                          {#if hasInventory && ic.tracked}
+                            <span class="ing-have" class:ok={ic.satisfied}>{ic.satisfied ? "✓ " : ""}{haveLabel(ic)}</span>
+                            {#if ic.bestQuality != null}<span class="ing-best" title="Best available quality">best Q{ic.bestQuality}</span>{/if}
+                            {#if ic.locations.length}<span class="ing-where" title="Where it's stored">@ {ic.locations.join(", ")}</span>{/if}
+                          {/if}
                         </li>
                       {/each}
                     </ul>
-                    {#if c.rep.recipe.craft_time_seconds}
+                    {#if c.rep.recipe?.craft_time_seconds}
                       <span class="wl-craft-time" title="Craft time">⏱ {formatCraftTime(c.rep.recipe.craft_time_seconds)}</span>
                     {/if}
                   {:else}
@@ -350,7 +393,6 @@
   }
   /* Fulfilment hint — pushed to the right; muted until the real surface ships. */
   .fulfil {
-    margin-left: auto;
     flex: 0 0 auto;
     font-size: 0.72rem;
     color: var(--muted);
@@ -358,6 +400,27 @@
     border: 1px solid var(--line);
     border-radius: 999px;
     background: var(--panel-2);
+  }
+  /* Whichever of (mats chip, fulfil chip) comes first gets pushed right. */
+  .mats {
+    margin-left: auto;
+  }
+  .fulfil.left-auto {
+    margin-left: auto;
+  }
+  /* Resource-coverage chip — has the mats vs partial. */
+  .mats {
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    color: var(--muted);
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel-2);
+  }
+  .mats.ready {
+    color: var(--good);
+    border-color: var(--good);
   }
   .fulfil.soon {
     opacity: 0.7;
@@ -449,6 +512,23 @@
   .ing-q {
     color: var(--faint);
     font-size: 0.72rem;
+  }
+  /* Coverage annotations on an ingredient: have-amount, best quality, where. */
+  .ing-have {
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .ing-have.ok {
+    color: var(--good);
+  }
+  .ing-best,
+  .ing-where {
+    font-size: 0.7rem;
+    color: var(--faint);
+  }
+  /* An ingredient you're short on — dim the row slightly. */
+  .wl-ingredients li.short .ing-name {
+    color: var(--muted);
   }
   .wl-craft-time {
     font-size: 0.74rem;

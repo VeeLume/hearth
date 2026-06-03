@@ -43,9 +43,9 @@ tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 # are what the loader touches directly; `missions` brings BlueprintPools and
 # `crafting` brings the Blueprint catalog they resolve against. (extract/items
 # are pulled transitively by missions/crafting, but listed for clarity.)
-sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.10.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "tags"] }
+sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.11.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "locations", "tags"] }
 
-sc-dossier ={ git = "https://github.com/VeeLume/sc-dossier.git", tag = "v0.1.1"}
+sc-dossier ={ git = "https://github.com/VeeLume/sc-dossier.git", tag = "v0.2.0"}
 
 # Internal crates
 hearth-core = { path = "crates/hearth-core" }
@@ -76,6 +76,8 @@ opt-level = 3
 [profile.dev.package.sc-missions]
 opt-level = 3
 [profile.dev.package.sc-crafting]
+opt-level = 3
+[profile.dev.package.sc-locations]
 opt-level = 3
 
 # Generated giant-match crate — keep at 1 per sc-langpatch's note.

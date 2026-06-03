@@ -71,8 +71,17 @@ fn norm_guid(s: &str) -> String {
 
 #[cfg(feature = "live-sync")]
 fn map_dossier_err(e: sc_dossier::Error) -> AppError {
+    AppError::LiveSync(dossier_err_message(&e))
+}
+
+/// Turn an sc-dossier error into user-facing copy (shared by the blueprint and
+/// inventory syncs — they hit the same CIG backend, so the same session /
+/// launcher guidance applies). The caller wraps it in the right [`AppError`]
+/// variant. `Error` is `#[non_exhaustive]`, hence the wildcard arm.
+#[cfg(feature = "live-sync")]
+pub(crate) fn dossier_err_message(e: &sc_dossier::Error) -> String {
     use sc_dossier::Error as E;
-    let msg = match &e {
+    match e {
         E::Mint { .. } => {
             "Your RSI session looks stale — re-open the RSI launcher to refresh it, then sync again."
                 .to_string()
@@ -81,9 +90,12 @@ fn map_dossier_err(e: sc_dossier::Error) -> AppError {
             "No RSI launcher session found — open the RSI launcher and sign in.".to_string()
         }
         E::LauncherNotFound => "RSI Launcher not found on this machine.".to_string(),
+        E::NoCurrentPlayer => {
+            "No active character on this RSI account — log into the game once, then sync again."
+                .to_string()
+        }
         other => format!("{other}"),
-    };
-    AppError::LiveSync(msg)
+    }
 }
 
 /// The fetch + reconcile, without notification (the caller notifies).

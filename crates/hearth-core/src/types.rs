@@ -400,6 +400,28 @@ pub enum IngredientKind {
     Item,
 }
 
+impl IngredientKind {
+    /// Storage representation — also the serde rename. Shared by recipe
+    /// ingredients and inventory stacks (both split on the same axis).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Resource => "resource",
+            Self::Item => "item",
+        }
+    }
+
+    /// Parse from the storage form. `Option` (not `FromStr`) so an unknown
+    /// value is a soft failure at the row-mapping boundary.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "resource" => Some(Self::Resource),
+            "item" => Some(Self::Item),
+            _ => None,
+        }
+    }
+}
+
 /// One ingredient in a [`Recipe`] — either a bulk resource or a discrete
 /// item, discriminated by [`Ingredient::kind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
@@ -412,6 +434,13 @@ pub struct Ingredient {
     /// is [`IngredientKind::Resource`], an `EntityClassDefinition` GUID
     /// when it's [`IngredientKind::Item`].
     pub guid: String,
+    /// `class_crc` of [`Self::guid`] — the CRC32C the EntityGraph backend
+    /// (and sc-dossier) identifies this resource/item by on the wire. Lets
+    /// the frontend match a recipe ingredient against the player's live
+    /// inventory ([`InventoryStack::crc`]) without re-hashing GUIDs. `None`
+    /// when the GUID doesn't parse (the name/coverage UI then falls back to
+    /// "untracked").
+    pub crc: Option<u32>,
     /// Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None`
     /// when the source's `name_key` doesn't resolve in the locale map.
     pub name: Option<String>,
@@ -427,4 +456,97 @@ pub struct Ingredient {
     pub count: Option<i32>,
     /// Minimum required quality tier (`0` if no lower bound).
     pub min_quality: i32,
+}
+
+/// Where an inventory stack physically sits, classified from sc-dossier's
+/// `Context`. `Location` / `Hangar` carry a resolved place name in
+/// [`InventoryStack::location_name`]; `Container` carries the owning ship/box
+/// geid in [`InventoryStack::container_geid`] (a live instance id, not
+/// holotable-resolvable to a name). Storage form is the lowercase string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum InventoryLocationKind {
+    /// On the character (`PlayerInventory`).
+    Player,
+    /// A world location (the `location_name` is the resolved place).
+    Location,
+    /// A hangar (the `location_name` is the resolved place).
+    Hangar,
+    /// Inside a ship/container (the `container_geid` is its instance id).
+    Container,
+    /// Bound to an entitlement.
+    Entitlement,
+    /// Any other / future context kind.
+    Other,
+}
+
+impl InventoryLocationKind {
+    /// Storage representation — also the serde rename.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Location => "location",
+            Self::Hangar => "hangar",
+            Self::Container => "container",
+            Self::Entitlement => "entitlement",
+            Self::Other => "other",
+        }
+    }
+
+    /// Parse from the storage form. `Option` (not `FromStr`) so an unknown
+    /// value is a soft failure at the row-mapping boundary.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "player" => Some(Self::Player),
+            "location" => Some(Self::Location),
+            "hangar" => Some(Self::Hangar),
+            "container" => Some(Self::Container),
+            "entitlement" => Some(Self::Entitlement),
+            "other" => Some(Self::Other),
+            _ => None,
+        }
+    }
+}
+
+/// One stack in the player's live inventory, resolved from sc-dossier's wire
+/// data against the catalog at sync time. Scoped by `(account_id, platform)`
+/// like every personal-state row, and replaced wholesale on each authoritative
+/// sync (it's a snapshot, not an incremental ledger).
+///
+/// [`Self::kind`] discriminates the two shapes — the same split recipes use:
+/// a [`IngredientKind::Resource`] stack carries [`Self::scu`] + [`Self::quality`];
+/// a [`IngredientKind::Item`] stack carries [`Self::count`]. [`Self::crc`] is the
+/// match key — `resource_id` for resources, `class_crc` for items — so a recipe
+/// ingredient ([`Ingredient::crc`]) lines up against it directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct InventoryStack {
+    pub id: RecordId,
+    /// `resource_id` (resource stacks) or `class_crc` (item stacks) — the
+    /// EntityGraph wire id this stack is keyed on. Matches [`Ingredient::crc`].
+    pub crc: u32,
+    /// Whether this is a bulk resource stack or a discrete item stack.
+    pub kind: IngredientKind,
+    /// Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None` when the
+    /// CRC didn't resolve against the catalog at sync time.
+    pub name: Option<String>,
+    /// Material quality `0..=1000`, for `Resource` stacks. `None` for items.
+    pub quality: Option<u16>,
+    /// Quantity in SCU, for `Resource` stacks. `None` for items.
+    pub scu: Option<f32>,
+    /// Discrete unit count, for `Item` stacks. `None` for resources.
+    pub count: Option<i32>,
+    /// Where this stack sits.
+    pub location_kind: InventoryLocationKind,
+    /// Resolved place name for `Location` / `Hangar` contexts. `None` otherwise
+    /// or when the place CRC didn't resolve.
+    pub location_name: Option<String>,
+    /// Owning ship/container geid (decimal string) for `Container` contexts.
+    /// `None` otherwise. String, not u64, to stay IPC/serde-friendly.
+    pub container_geid: Option<String>,
+    pub platform: Platform,
+    /// FK to `accounts.id`.
+    pub account_id: RecordId,
+    /// When this snapshot was synced.
+    pub synced_at: DateTime<Utc>,
 }

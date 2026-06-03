@@ -13,22 +13,56 @@ use hearth_core::{
     BpPoolReward, BpRewardEntry, BpView, ItemRewardView, MissionView, RepRewardView,
     ScripRewardView,
 };
-use sc_holotable::asset::{Datacore, LocaleKey, LocaleMap, RecordPaths};
+use sc_holotable::asset::{Datacore, LocaleKey, LocaleMap, RecordPaths, class_crc};
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::items::{ItemCatalog, Items};
+use sc_holotable::locations::Locations;
 use sc_holotable::missions::{Mission, Missions, RewardAmount, RewardCurrencies};
 use sc_holotable::resources::Resources;
 
 use super::CookedData;
 
-/// Cook both products from one parsed `Datacore`. Each builder makes its own
+/// Cook all products from one parsed `Datacore`. Each builder makes its own
 /// indices (cheap relative to the DCB parse this shares), so they stay
 /// self-contained.
 pub(super) fn build_cooked(datacore: &Datacore, locale: &LocaleMap) -> CookedData {
     CookedData {
         blueprints: build_blueprints(datacore, locale),
         missions: build_missions(datacore, locale),
+        resource_names: build_resource_names(datacore, locale),
+        location_names: build_location_names(datacore, locale),
     }
+}
+
+/// `class_crc(ResourceType.guid) → display name` for every resource. The
+/// inventory sync keys sc-dossier's wire `resource_id` straight into this map,
+/// so material names resolve without carrying a `LocaleMap` past the cook.
+fn build_resource_names(datacore: &Datacore, locale: &LocaleMap) -> HashMap<u32, String> {
+    let resources = Resources::build(datacore.records());
+    let mut out = HashMap::new();
+    for r in resources.all() {
+        if let Some(name) = locale.resolve(&r.name_key)
+            && !name.is_empty()
+        {
+            out.insert(class_crc(&r.guid), name.to_owned());
+        }
+    }
+    out
+}
+
+/// `class_crc(StarMapObject.guid) → place name` for every universe location.
+/// Resolves an inventory stack's `Location` / `Hangar` place CRC to a name.
+fn build_location_names(datacore: &Datacore, locale: &LocaleMap) -> HashMap<u32, String> {
+    let locations = Locations::build(datacore.records());
+    let mut out = HashMap::new();
+    for (guid, loc) in locations.iter() {
+        if let Some(name) = loc.display_name(locale)
+            && !name.is_empty()
+        {
+            out.insert(class_crc(guid), name.to_owned());
+        }
+    }
+    out
 }
 
 fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {

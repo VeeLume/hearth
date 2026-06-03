@@ -105,6 +105,22 @@ impl AppState {
         Ok(&self.data().await?.missions)
     }
 
+    /// `class_crc → resource name` map (projection of [`Self::data`]). Resolves
+    /// a live-inventory `resource_id` to a readable material name at sync time.
+    pub(crate) async fn resource_names(
+        &self,
+    ) -> Result<&std::collections::HashMap<u32, String>, AppError> {
+        Ok(&self.data().await?.resource_names)
+    }
+
+    /// `class_crc → place name` map (projection of [`Self::data`]). Resolves an
+    /// inventory stack's `Location` / `Hangar` place CRC to a readable location.
+    pub(crate) async fn location_names(
+        &self,
+    ) -> Result<&std::collections::HashMap<u32, String>, AppError> {
+        Ok(&self.data().await?.location_names)
+    }
+
     pub(crate) async fn db(&self) -> Result<&DbPool, AppError> {
         self.db
             .get_or_try_init(|| async {

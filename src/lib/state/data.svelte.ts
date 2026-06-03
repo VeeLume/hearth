@@ -18,11 +18,13 @@ import {
   commands,
   errText,
   onOwnershipChanged,
+  onInventoryChanged,
   type UnlistenFn,
   type BpView,
   type MissionView,
   type MissionRef,
   type WishIntent,
+  type InventoryStack,
 } from "$lib/ipc";
 
 // Ownership sets — shared so a toggle on any page updates them everywhere.
@@ -37,10 +39,24 @@ export function wishSet(intent: WishIntent): SvelteSet<string> {
 let _blueprints = $state<BpView[]>([]);
 let _missions = $state<MissionView[]>([]);
 let _grantedBy = $state<Partial<Record<string, MissionRef[]>>>({});
+let _inventory = $state<InventoryStack[]>([]);
 let _blueprintsReady = $state(false);
 let _missionsReady = $state(false);
 let _ownershipReady = $state(false);
 let _grantedByReady = $state(false);
+let _inventoryReady = $state(false);
+
+// Inventory stacks indexed by their CRC (resource_id / class_crc) — the match
+// key a recipe ingredient (`Ingredient.crc`) joins on for want-item coverage.
+const _inventoryByCrc = $derived.by(() => {
+  const m = new Map<number, InventoryStack[]>();
+  for (const s of _inventory) {
+    const arr = m.get(s.crc);
+    if (arr) arr.push(s);
+    else m.set(s.crc, [s]);
+  }
+  return m;
+});
 
 /** Reactive read access to the shared, navigation-persistent data. */
 export const data = {
@@ -52,6 +68,13 @@ export const data = {
   },
   get grantedBy() {
     return _grantedBy;
+  },
+  get inventory() {
+    return _inventory;
+  },
+  /** Inventory stacks keyed by CRC — the want-item coverage join. */
+  get inventoryByCrc() {
+    return _inventoryByCrc;
   },
   get blueprintsReady() {
     return _blueprintsReady;
@@ -65,12 +88,16 @@ export const data = {
   get grantedByReady() {
     return _grantedByReady;
   },
+  get inventoryReady() {
+    return _inventoryReady;
+  },
 };
 
 let bpPromise: Promise<string | null> | null = null;
 let mPromise: Promise<string | null> | null = null;
 let ownPromise: Promise<string | null> | null = null;
 let gbPromise: Promise<string | null> | null = null;
+let invPromise: Promise<string | null> | null = null;
 
 export function ensureBlueprints(): Promise<string | null> {
   if (_blueprintsReady) return Promise.resolve(null);
@@ -121,6 +148,40 @@ export function ensureGrantedBy(): Promise<string | null> {
     })();
   }
   return gbPromise;
+}
+
+export function ensureInventory(): Promise<string | null> {
+  if (_inventoryReady) return Promise.resolve(null);
+  if (!invPromise) {
+    invPromise = (async () => {
+      const r = await commands.listInventory();
+      if (r.status === "ok") {
+        _inventory = r.data;
+        _inventoryReady = true;
+        return null;
+      }
+      invPromise = null;
+      return errText(r.error);
+    })();
+  }
+  return invPromise;
+}
+
+/** Re-pull the resource inventory from the DB (e.g. after a live inventory sync
+ *  reconciles it behind the UI's back). Replaces the shared array in place. */
+export async function refreshInventory() {
+  const r = await commands.listInventory();
+  if (r.status === "ok") {
+    _inventory = r.data;
+    _inventoryReady = true;
+  }
+}
+
+/** Subscribe to the backend's `inventory-changed` event (live inventory sync)
+ *  and refresh the shared inventory so the Resources page + wishlist coverage
+ *  stay current without a restart. Call once, in the root layout. */
+export function listenForInventoryChanges(): Promise<UnlistenFn> {
+  return onInventoryChanged(refreshInventory);
 }
 
 function applyOwnership(

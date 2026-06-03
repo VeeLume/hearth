@@ -5,7 +5,7 @@ use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri_specta::{Builder, collect_commands};
 
 use crate::sensors::import;
-use crate::{commands, live_sync, settings};
+use crate::{commands, inventory_sync, live_sync, settings};
 
 /// Single source of truth for the IPC command list. Used both by
 /// `run()` at app startup and by the `export-bindings` binary so the
@@ -33,10 +33,13 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         commands::catalog::predicted_load_tier,
         settings::get_settings,
         settings::set_live_sync,
+        settings::set_live_inventory,
         settings::set_sensor,
         settings::set_online,
         settings::set_onboarding_complete,
         live_sync::live_sync_now,
+        inventory_sync::inventory_sync_now,
+        commands::inventory::list_inventory,
         commands::catalog::wipe_sc_cache,
     ])
 }

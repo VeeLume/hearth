@@ -23,6 +23,7 @@ pub mod sc_loader;
 pub mod sensors;
 
 mod commands;
+mod inventory_sync;
 mod live_sync;
 mod settings;
 
@@ -35,6 +36,8 @@ pub use app::lifecycle::run;
 // `crate::AppState` / `crate::app_data_root` / `crate::emit_*` / `crate::plural`
 // references across the domain modules resolve without each importing from
 // `app::*`.
-pub(crate) use app::events::{emit_ownership_changed, emit_scope_changed, plural, preview_names};
+pub(crate) use app::events::{
+    emit_inventory_changed, emit_ownership_changed, emit_scope_changed, plural, preview_names,
+};
 pub(crate) use app::paths::app_data_root;
 pub(crate) use app::state::AppState;

@@ -10,7 +10,7 @@
 //! AppHandle / async runtime to be useful). Stage 2 wires the loader
 //! to call the adapters here.
 
-use sc_holotable::asset::Guid;
+use sc_holotable::asset::{Guid, class_crc};
 use sc_holotable::crafting::{
     Blueprint, Cost, Duration as ScDuration, ItemCost, Recipe as ScRecipe, ResourceCost,
 };
@@ -110,6 +110,7 @@ fn ingredient_from_resource_cost(rc: &ResourceCost) -> Option<Ingredient> {
     Some(Ingredient {
         kind: IngredientKind::Resource,
         guid: guid_string(&guid),
+        crc: Some(class_crc(&guid)),
         name: None,
         quantity_scu,
         count: None,
@@ -122,6 +123,7 @@ fn ingredient_from_item_cost(ic: &ItemCost) -> Option<Ingredient> {
     Some(Ingredient {
         kind: IngredientKind::Item,
         guid: guid_string(&guid),
+        crc: Some(class_crc(&guid)),
         name: None,
         quantity_scu: None,
         count: Some(ic.quantity),
@@ -175,12 +177,16 @@ mod tests {
         let res = &out[0];
         assert_eq!(res.kind, IngredientKind::Resource);
         assert_eq!(res.guid, guid_string(&guid(1)));
+        // The CRC is the inventory-match key, hashed from the same GUID the
+        // EntityGraph backend keys on.
+        assert_eq!(res.crc, Some(class_crc(&guid(1))));
         assert_eq!(res.quantity_scu, Some(1.5));
         assert_eq!(res.count, None);
 
         let item = &out[1];
         assert_eq!(item.kind, IngredientKind::Item);
         assert_eq!(item.guid, guid_string(&guid(2)));
+        assert_eq!(item.crc, Some(class_crc(&guid(2))));
         assert_eq!(item.count, Some(13));
         assert_eq!(item.quantity_scu, None);
         assert_eq!(item.min_quality, 1);

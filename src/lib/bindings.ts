@@ -229,6 +229,19 @@ async setLiveSync(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
 }
 },
 /**
+ * Enable/disable live resource-inventory sync. Enabling records the shared
+ * live-sync consent (the UI shows the one-time consent dialog before calling
+ * this with `enabled = true`, same as `set_live_sync`).
+ */
+async setLiveInventory(enabled: boolean) : Promise<Result<AppSettings, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_live_inventory", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Enable/disable live Game.log sensing. Takes effect within one poll interval
  * (the sensor loop checks this each tick) — no restart needed.
  */
@@ -273,6 +286,32 @@ async setOnboardingComplete() : Promise<Result<AppSettings, AppError>> {
 async liveSyncNow() : Promise<Result<LiveSyncResult, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("live_sync_now") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch the player's live inventory from CIG's backend and replace the active
+ * scope's stored snapshot with it. Emits a success/error notification
+ * regardless of caller.
+ */
+async inventorySyncNow() : Promise<Result<InventorySyncResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("inventory_sync_now") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List the active scope's stored resource inventory (resources + the
+ * recipe-relevant discrete items), newest snapshot. Reads the DB only — no
+ * network, so it works offline and reflects the last `inventory_sync_now`.
+ */
+async listInventory() : Promise<Result<InventoryStack[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_inventory") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -363,7 +402,7 @@ account_hint: number | null; created_at: string }
  */
 export type AccountWithAliases = { account: Account; aliases: string[] }
 export type ActiveScope = { platform: Platform; channel: string; account: Account }
-export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "LiveSync"; message: string } | { kind: "Internal"; message: string }
+export type AppError = { kind: "Storage"; message: string } | { kind: "NoInstall"; message: string } | { kind: "Identity"; message: string } | { kind: "LiveSync"; message: string } | { kind: "Inventory"; message: string } | { kind: "Internal"; message: string }
 /**
  * App-global preferences surfaced to the Settings page.
  */
@@ -376,6 +415,11 @@ live_sync_available: boolean;
  * Runtime toggle — off by default; the user opts in.
  */
 live_sync_enabled: boolean; 
+/**
+ * Live resource-inventory sync toggle — off by default; the user opts in.
+ * Shares the live-sync consent + online master switch.
+ */
+live_inventory_enabled: boolean; 
 /**
  * Whether the one-time ToS consent has been acknowledged.
  */
@@ -548,6 +592,15 @@ kind: IngredientKind;
  */
 guid: string; 
 /**
+ * `class_crc` of [`Self::guid`] — the CRC32C the EntityGraph backend
+ * (and sc-dossier) identifies this resource/item by on the wire. Lets
+ * the frontend match a recipe ingredient against the player's live
+ * inventory ([`InventoryStack::crc`]) without re-hashing GUIDs. `None`
+ * when the GUID doesn't parse (the name/coverage UI then falls back to
+ * "untracked").
+ */
+crc: number | null; 
+/**
  * Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None`
  * when the source's `name_key` doesn't resolve in the locale map.
  */
@@ -590,6 +643,115 @@ export type IngredientKind =
  * Discrete item — quantity is a unit count (see [`Ingredient::count`]).
  */
 "item"
+/**
+ * Where an inventory stack physically sits, classified from sc-dossier's
+ * `Context`. `Location` / `Hangar` carry a resolved place name in
+ * [`InventoryStack::location_name`]; `Container` carries the owning ship/box
+ * geid in [`InventoryStack::container_geid`] (a live instance id, not
+ * holotable-resolvable to a name). Storage form is the lowercase string.
+ */
+export type InventoryLocationKind = 
+/**
+ * On the character (`PlayerInventory`).
+ */
+"player" | 
+/**
+ * A world location (the `location_name` is the resolved place).
+ */
+"location" | 
+/**
+ * A hangar (the `location_name` is the resolved place).
+ */
+"hangar" | 
+/**
+ * Inside a ship/container (the `container_geid` is its instance id).
+ */
+"container" | 
+/**
+ * Bound to an entitlement.
+ */
+"entitlement" | 
+/**
+ * Any other / future context kind.
+ */
+"other"
+/**
+ * One stack in the player's live inventory, resolved from sc-dossier's wire
+ * data against the catalog at sync time. Scoped by `(account_id, platform)`
+ * like every personal-state row, and replaced wholesale on each authoritative
+ * sync (it's a snapshot, not an incremental ledger).
+ * 
+ * [`Self::kind`] discriminates the two shapes — the same split recipes use:
+ * a [`IngredientKind::Resource`] stack carries [`Self::scu`] + [`Self::quality`];
+ * a [`IngredientKind::Item`] stack carries [`Self::count`]. [`Self::crc`] is the
+ * match key — `resource_id` for resources, `class_crc` for items — so a recipe
+ * ingredient ([`Ingredient::crc`]) lines up against it directly.
+ */
+export type InventoryStack = { id: RecordId; 
+/**
+ * `resource_id` (resource stacks) or `class_crc` (item stacks) — the
+ * EntityGraph wire id this stack is keyed on. Matches [`Ingredient::crc`].
+ */
+crc: number; 
+/**
+ * Whether this is a bulk resource stack or a discrete item stack.
+ */
+kind: IngredientKind; 
+/**
+ * Resolved display name (e.g. `"Aluminum"`, `"Hadanite"`). `None` when the
+ * CRC didn't resolve against the catalog at sync time.
+ */
+name: string | null; 
+/**
+ * Material quality `0..=1000`, for `Resource` stacks. `None` for items.
+ */
+quality: number | null; 
+/**
+ * Quantity in SCU, for `Resource` stacks. `None` for items.
+ */
+scu: number | null; 
+/**
+ * Discrete unit count, for `Item` stacks. `None` for resources.
+ */
+count: number | null; 
+/**
+ * Where this stack sits.
+ */
+location_kind: InventoryLocationKind; 
+/**
+ * Resolved place name for `Location` / `Hangar` contexts. `None` otherwise
+ * or when the place CRC didn't resolve.
+ */
+location_name: string | null; 
+/**
+ * Owning ship/container geid (decimal string) for `Container` contexts.
+ * `None` otherwise. String, not u64, to stay IPC/serde-friendly.
+ */
+container_geid: string | null; platform: Platform; 
+/**
+ * FK to `accounts.id`.
+ */
+account_id: RecordId; 
+/**
+ * When this snapshot was synced.
+ */
+synced_at: string }
+/**
+ * Outcome of one inventory sync, for the Settings UI + the notification body.
+ */
+export type InventorySyncResult = { 
+/**
+ * Distinct resource stacks persisted (a material at a quality in a place).
+ */
+resources: number; 
+/**
+ * Distinct item stacks persisted (recipe-relevant discrete items).
+ */
+items: number; 
+/**
+ * Total resource SCU across all resource stacks.
+ */
+total_scu: number }
 /**
  * A non-currency item reward (ship unlock, collector item, …).
  */

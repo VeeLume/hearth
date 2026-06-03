@@ -11,8 +11,7 @@ pub mod types;
 pub use missions::missions_by_blueprint;
 pub use profile::{ProfileError, ProfileInfo};
 pub use types::{
-    Account, BpPoolReward, BpRewardEntry, BpView, Ingredient, IngredientKind, ItemRewardView,
-    MissionRef,
-    MissionView, OwnedBlueprint, Platform, Recipe, RecordId, RepRewardView, ScripRewardView,
-    WishIntent, WishlistEntry,
+    Account, BpPoolReward, BpRewardEntry, BpView, Ingredient, IngredientKind,
+    InventoryLocationKind, InventoryStack, ItemRewardView, MissionRef, MissionView, OwnedBlueprint,
+    Platform, Recipe, RecordId, RepRewardView, ScripRewardView, WishIntent, WishlistEntry,
 };

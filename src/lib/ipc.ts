@@ -28,6 +28,8 @@ export const EVENTS = {
   notify: "notify",
   /** The owned set changed behind the UI's back (live sync, sensor auto-mark). */
   ownershipChanged: "ownership-changed",
+  /** The resource inventory changed behind the UI's back (live inventory sync). */
+  inventoryChanged: "inventory-changed",
   /** The active scope changed (e.g. an auto-applied handle rename). */
   activeScopeChanged: "active-scope-changed",
 } as const;
@@ -35,6 +37,11 @@ export const EVENTS = {
 /** Subscribe to `ownership-changed`; resolves to the unlisten handle. */
 export function onOwnershipChanged(cb: () => void): Promise<UnlistenFn> {
   return listen(EVENTS.ownershipChanged, () => cb());
+}
+
+/** Subscribe to `inventory-changed`; resolves to the unlisten handle. */
+export function onInventoryChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen(EVENTS.inventoryChanged, () => cb());
 }
 
 /** Subscribe to `active-scope-changed`; resolves to the unlisten handle. */

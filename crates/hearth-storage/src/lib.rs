@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use hearth_core::{Account, OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry};
+use hearth_core::{
+    Account, IngredientKind, InventoryLocationKind, InventoryStack, OwnedBlueprint, Platform,
+    RecordId, WishIntent, WishlistEntry,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Sqlite};
 
@@ -331,6 +334,15 @@ pub async fn merge_accounts(pool: &DbPool, from: RecordId, into: RecordId) -> Re
         .execute(&mut *tx)
         .await
         .context("dropping leftover wishlist")?;
+    // Resource inventory is a wholesale snapshot keyed only by its row id (no
+    // unique scope constraint), so a plain reassign is enough — duplicate
+    // stacks from two snapshots are harmless and the next sync replaces them.
+    sqlx::query("UPDATE resource_inventory SET account_id = ? WHERE account_id = ?")
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("reassigning resource inventory")?;
 
     // Move from's aliases onto into.
     sqlx::query("UPDATE account_aliases SET account_id = ? WHERE account_id = ?")
@@ -686,6 +698,148 @@ fn row_to_wishlist(row: WishlistRow) -> Result<WishlistEntry> {
     })
 }
 
+// ── Resource inventory ────────────────────────────────────────────────────────
+
+/// Replace the scope's entire resource-inventory snapshot with `stacks`, in one
+/// transaction (delete-all-then-insert). Authoritative reconcile — each sync
+/// reads the full live inventory, so a wholesale swap is correct and avoids
+/// staleness from a partial diff. Stamps `synced_at` from each stack as given.
+pub async fn replace_inventory(
+    pool: &DbPool,
+    scope: Scope,
+    stacks: &[InventoryStack],
+) -> Result<()> {
+    let mut tx = pool.begin().await.context("beginning inventory replace")?;
+    sqlx::query("DELETE FROM resource_inventory WHERE account_id = ? AND platform_id = ?")
+        .bind(scope.account_id.to_string())
+        .bind(scope.platform.as_str())
+        .execute(&mut *tx)
+        .await
+        .context("clearing resource_inventory")?;
+    for s in stacks {
+        sqlx::query(
+            "INSERT INTO resource_inventory \
+             (id, account_id, platform_id, kind, crc, name, quality, scu, count, \
+              location_kind, location_name, container_geid, synced_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(s.id.to_string())
+        .bind(scope.account_id.to_string())
+        .bind(scope.platform.as_str())
+        .bind(s.kind.as_str())
+        .bind(i64::from(s.crc))
+        .bind(s.name.as_deref())
+        .bind(s.quality.map(i64::from))
+        .bind(s.scu.map(f64::from))
+        .bind(s.count.map(i64::from))
+        .bind(s.location_kind.as_str())
+        .bind(s.location_name.as_deref())
+        .bind(s.container_geid.as_deref())
+        .bind(s.synced_at.to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .context("inserting resource_inventory")?;
+    }
+    tx.commit().await.context("committing inventory replace")?;
+    Ok(())
+}
+
+pub async fn list_inventory(pool: &DbPool, scope: Scope) -> Result<Vec<InventoryStack>> {
+    let rows: Vec<InventoryRow> = sqlx::query_as(
+        "SELECT id, kind, crc, name, quality, scu, count, location_kind, location_name, \
+         container_geid, platform_id, account_id, synced_at FROM resource_inventory \
+         WHERE account_id = ? AND platform_id = ? ORDER BY name",
+    )
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_all(pool)
+    .await
+    .context("listing resource_inventory")?;
+    rows.into_iter().map(row_to_inventory).collect()
+}
+
+/// When the scope's inventory was last synced, if ever (the max `synced_at`
+/// across its rows). `None` when the scope has no inventory.
+pub async fn inventory_synced_at(
+    pool: &DbPool,
+    scope: Scope,
+) -> Result<Option<chrono::DateTime<Utc>>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT MAX(synced_at) FROM resource_inventory WHERE account_id = ? AND platform_id = ?",
+    )
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_optional(pool)
+    .await
+    .context("reading inventory synced_at")?;
+    match row.and_then(|(v,)| v) {
+        Some(s) => Ok(Some(
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .context("parsing inventory synced_at")?
+                .with_timezone(&Utc),
+        )),
+        None => Ok(None),
+    }
+}
+
+type InventoryRow = (
+    String,         // id
+    String,         // kind
+    i64,            // crc
+    Option<String>, // name
+    Option<i64>,    // quality
+    Option<f64>,    // scu
+    Option<i64>,    // count
+    String,         // location_kind
+    Option<String>, // location_name
+    Option<String>, // container_geid
+    String,         // platform_id
+    String,         // account_id
+    String,         // synced_at
+);
+
+fn row_to_inventory(row: InventoryRow) -> Result<InventoryStack> {
+    let (
+        id,
+        kind,
+        crc,
+        name,
+        quality,
+        scu,
+        count,
+        location_kind,
+        location_name,
+        container_geid,
+        platform_id,
+        account_id,
+        synced_at,
+    ) = row;
+    Ok(InventoryStack {
+        id: RecordId(id.parse().context("parsing inventory id")?),
+        crc: u32::try_from(crc).context("inventory crc out of u32 range")?,
+        kind: IngredientKind::from_str(&kind)
+            .with_context(|| format!("unknown inventory kind {kind:?}"))?,
+        name,
+        quality: quality
+            .map(|q| u16::try_from(q).context("inventory quality out of u16 range"))
+            .transpose()?,
+        scu: scu.map(|v| v as f32),
+        count: count
+            .map(|c| i32::try_from(c).context("inventory count out of i32 range"))
+            .transpose()?,
+        location_kind: InventoryLocationKind::from_str(&location_kind)
+            .with_context(|| format!("unknown inventory location_kind {location_kind:?}"))?,
+        location_name,
+        container_geid,
+        platform: Platform::from_str(&platform_id)
+            .with_context(|| format!("unknown platform_id {platform_id:?}"))?,
+        account_id: RecordId(account_id.parse().context("parsing account_id")?),
+        synced_at: chrono::DateTime::parse_from_rfc3339(&synced_at)
+            .context("parsing synced_at")?
+            .with_timezone(&Utc),
+    })
+}
+
 // ── App settings (key/value, app-global) ─────────────────────────────────────
 
 /// Read an app-global setting by key. `None` if unset.
@@ -803,6 +957,56 @@ mod tests {
         assert_eq!(list_owned(&pool, s).await.unwrap().len(), 1);
         assert!(remove_owned(&pool, s, "abc123").await.unwrap());
         assert!(get_owned(&pool, s, "abc123").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn inventory_roundtrip_and_replace() {
+        use hearth_core::{InventoryLocationKind, InventoryStack};
+        let pool = open_in_memory().await.unwrap();
+        let a = account(&pool, "VeeLume").await;
+        let s = scope(&a, Platform::Prod);
+
+        let stack = |crc: u32, name: &str, scu: f32| InventoryStack {
+            id: RecordId::new_v7(),
+            crc,
+            kind: IngredientKind::Resource,
+            name: Some(name.to_string()),
+            quality: Some(800),
+            scu: Some(scu),
+            count: None,
+            location_kind: InventoryLocationKind::Hangar,
+            location_name: Some("Area18".to_string()),
+            container_geid: None,
+            platform: Platform::Prod,
+            account_id: a.id,
+            synced_at: Utc::now(),
+        };
+
+        replace_inventory(&pool, s, &[stack(1, "Aluminum", 1.5), stack(2, "Iron", 0.5)])
+            .await
+            .unwrap();
+        let listed = list_inventory(&pool, s).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(inventory_synced_at(&pool, s).await.unwrap().is_some());
+        // Sorted by name: Aluminum before Iron.
+        assert_eq!(listed[0].name.as_deref(), Some("Aluminum"));
+        assert_eq!(listed[0].crc, 1);
+        assert_eq!(listed[0].scu, Some(1.5));
+        assert_eq!(listed[0].quality, Some(800));
+        assert_eq!(listed[0].location_kind, InventoryLocationKind::Hangar);
+
+        // Replace is wholesale — a fresh snapshot supersedes the old one.
+        replace_inventory(&pool, s, &[stack(3, "Tungsten", 2.0)])
+            .await
+            .unwrap();
+        let listed = list_inventory(&pool, s).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name.as_deref(), Some("Tungsten"));
+
+        // Empty snapshot clears it.
+        replace_inventory(&pool, s, &[]).await.unwrap();
+        assert!(list_inventory(&pool, s).await.unwrap().is_empty());
+        assert!(inventory_synced_at(&pool, s).await.unwrap().is_none());
     }
 
     #[tokio::test]

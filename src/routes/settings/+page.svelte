@@ -19,6 +19,12 @@
   let syncing = $state(false);
   let lastSync = $state<string | null>(null);
 
+  // ── Live resource-inventory sync (shares the live-sync consent) ───────
+  let invBusy = $state(false);
+  let invSyncing = $state(false);
+  let lastInvSync = $state<string | null>(null);
+  let showInvConsent = $state(false);
+
   onMount(async () => {
     const r = await commands.getSettings();
     if (r.status === "ok") settings = r.data;
@@ -45,6 +51,41 @@
     if (r.status === "ok") settings = r.data;
     busy = false;
     syncNow();
+  }
+
+  async function setInventoryEnabled(enabled: boolean) {
+    if (invBusy || !settings) return;
+    // First enable needs the one-time consent (shared with blueprint sync).
+    if (enabled && !settings.live_sync_consented) {
+      showInvConsent = true;
+      return;
+    }
+    invBusy = true;
+    const r = await commands.setLiveInventory(enabled);
+    if (r.status === "ok") settings = r.data;
+    invBusy = false;
+    if (enabled) inventorySyncNow();
+  }
+
+  async function acceptInvConsent() {
+    showInvConsent = false;
+    invBusy = true;
+    const r = await commands.setLiveInventory(true);
+    if (r.status === "ok") settings = r.data;
+    invBusy = false;
+    inventorySyncNow();
+  }
+
+  async function inventorySyncNow() {
+    if (invSyncing) return;
+    invSyncing = true;
+    lastInvSync = null;
+    const r = await commands.inventorySyncNow();
+    if (r.status === "ok") {
+      const d = r.data;
+      lastInvSync = `${d.resources} resource${d.resources === 1 ? "" : "s"} · ${d.items} item${d.items === 1 ? "" : "s"} · ${d.total_scu.toFixed(1)} SCU`;
+    }
+    invSyncing = false;
   }
 
   async function setSensor(enabled: boolean) {
@@ -161,6 +202,42 @@
         </div>
       {/if}
     </div>
+    <div class="card">
+      <h2>Live resource sync <span class="adv">advanced</span></h2>
+      <p class="muted">
+        Reads your in-game <strong>resource inventory</strong> from your RSI
+        account on CIG's servers — every stowed material (type, quality, amount)
+        and where it sits — so the <strong>Resources</strong> page and Wishlist
+        can tell you whether you have the mats to craft a want-item.
+        <br /><strong>Limitation:</strong> same <strong>unofficial, read-only</strong>
+        connection as live blueprint sync, <strong>against Star Citizen's Terms
+        of Service</strong> — your own account only, at your own risk. Syncs at
+        startup and when you press <em>Sync now</em> — never in the background.
+      </p>
+      {#if !settings.online_enabled}
+        <p class="offline-note">
+          Offline mode is on (<strong>Account</strong> tab → Online features) —
+          resource sync is paused.
+        </p>
+      {/if}
+      <div class="row">
+        <Switch
+          checked={settings.live_inventory_enabled}
+          disabled={invBusy || !settings.online_enabled}
+          label="Live resource sync"
+          onchange={(v) => setInventoryEnabled(v)}
+        />
+        <span class="switch-label">{settings.live_inventory_enabled ? "Enabled" : "Disabled"}</span>
+      </div>
+      {#if settings.live_inventory_enabled}
+        <div class="row">
+          <button class="btn" onclick={inventorySyncNow} disabled={invSyncing || !settings.online_enabled}>
+            {invSyncing ? "Syncing…" : "Sync now"}
+          </button>
+          {#if lastInvSync}<span class="result ok">{lastInvSync}</span>{/if}
+        </div>
+      {/if}
+    </div>
     {/if}
   {:else if tab === "advanced"}
   <div class="card">
@@ -204,6 +281,24 @@
     <div class="modal-actions">
       <button class="btn" onclick={() => (showConsent = false)}>Cancel</button>
       <button class="btn btn-primary" onclick={acceptConsent}>I understand — enable</button>
+    </div>
+  </div>
+{/if}
+
+{#if showInvConsent}
+  <button class="modal-backdrop" aria-label="Cancel" onclick={() => (showInvConsent = false)}></button>
+  <div class="modal" role="dialog" aria-label="Enable live resource sync">
+    <h3>Enable live resource sync?</h3>
+    <p>
+      This connects to CIG's game servers using your RSI launcher session to read
+      your in-game resource inventory. It is an <strong>unofficial</strong>
+      connection — <strong>against Star Citizen's Terms of Service</strong>. It's
+      read-only and only ever touches your own account, but you use it at your own
+      risk.
+    </p>
+    <div class="modal-actions">
+      <button class="btn" onclick={() => (showInvConsent = false)}>Cancel</button>
+      <button class="btn btn-primary" onclick={acceptInvConsent}>I understand — enable</button>
     </div>
   </div>
 {/if}

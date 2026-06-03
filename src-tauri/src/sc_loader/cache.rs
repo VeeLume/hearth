@@ -31,9 +31,10 @@ use super::CookedData;
 /// cooked [`CookedData`] serde shape changes ([`hearth_core::BpView`] or
 /// [`hearth_core::MissionView`] fields added/renamed/retyped) so older caches
 /// invalidate cleanly via `Error::ProcessedSnapshotStale` instead of
-/// deserializing into a silently-wrong shape. (17: mission pool key now
-/// includes encounter shape (difficulty tiers split); diagnostic removed.)
-const HEARTH_CATALOG_COOK_VERSION: u32 = 17;
+/// deserializing into a silently-wrong shape. (18: CookedData gains
+/// resource_names / location_names CRC→name maps and BpView ingredients gain
+/// a `crc` match key, for the live resource inventory.)
+const HEARTH_CATALOG_COOK_VERSION: u32 = 18;
 
 pub(super) const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 pub(super) const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";

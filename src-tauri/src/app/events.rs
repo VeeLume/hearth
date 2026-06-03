@@ -12,6 +12,15 @@ pub(crate) fn emit_ownership_changed(app: &AppHandle) {
     }
 }
 
+/// Tell the frontend the resource inventory changed behind its back (a live
+/// inventory sync reconciled it) so the Resources page + wishlist coverage
+/// re-pull the snapshot without a restart.
+pub(crate) fn emit_inventory_changed(app: &AppHandle) {
+    if let Err(e) = app.emit("inventory-changed", ()) {
+        tracing::warn!("failed to emit inventory-changed: {e}");
+    }
+}
+
 /// Tell the frontend the active account/scope changed (e.g. an auto-applied
 /// rename swapped which account row is active) so the sidebar re-reads it.
 pub(crate) fn emit_scope_changed(app: &AppHandle) {

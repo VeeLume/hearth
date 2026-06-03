@@ -85,6 +85,14 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 pub struct CookedData {
     pub blueprints: Vec<hearth_core::BpView>,
     pub missions: Vec<hearth_core::MissionView>,
+    /// `class_crc(ResourceType.guid) → display name`. The lookup that resolves
+    /// a live-inventory `resource_id` (sc-dossier's wire CRC) to a readable
+    /// resource name at sync time, without the `LocaleMap` (which only exists
+    /// during the cook). See [`cook`].
+    pub resource_names: std::collections::HashMap<u32, String>,
+    /// `class_crc(StarMapObject.guid) → place name`. Resolves an inventory
+    /// stack's `Location` / `Hangar` place CRC to a readable location.
+    pub location_names: std::collections::HashMap<u32, String>,
 }
 
 /// Build the cooked SC reference data (catalog + missions) for the given

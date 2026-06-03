@@ -9,6 +9,11 @@ use crate::error::AppError;
 
 pub(crate) const LIVE_SYNC_ENABLED: &str = "live_sync_enabled";
 pub(crate) const LIVE_SYNC_CONSENTED: &str = "live_sync_consented";
+/// Live resource-inventory sync toggle (off by default). Independent of the
+/// blueprint live-sync toggle, but shares the one-time [`LIVE_SYNC_CONSENTED`]
+/// acknowledgement and the [`ONLINE_ENABLED`] master switch (both are the same
+/// sc-dossier / CIG-backend connection).
+pub(crate) const LIVE_INVENTORY_ENABLED: &str = "live_inventory_enabled";
 pub(crate) const SENSOR_ENABLED: &str = "sensor_enabled";
 pub(crate) const ONBOARDING_COMPLETED: &str = "onboarding_completed";
 /// Last launcher handle we ran against — the steady-state guard for the startup
@@ -27,6 +32,9 @@ pub(crate) struct AppSettings {
     live_sync_available: bool,
     /// Runtime toggle — off by default; the user opts in.
     live_sync_enabled: bool,
+    /// Live resource-inventory sync toggle — off by default; the user opts in.
+    /// Shares the live-sync consent + online master switch.
+    live_inventory_enabled: bool,
     /// Whether the one-time ToS consent has been acknowledged.
     live_sync_consented: bool,
     /// Live Game.log sensing (auto-mark BPs received during play). Default on.
@@ -57,6 +65,7 @@ async fn read_settings(db: &DbPool) -> Result<AppSettings, AppError> {
     Ok(AppSettings {
         live_sync_available: cfg!(feature = "live-sync"),
         live_sync_enabled: read_bool_setting(db, LIVE_SYNC_ENABLED, false).await?,
+        live_inventory_enabled: read_bool_setting(db, LIVE_INVENTORY_ENABLED, false).await?,
         live_sync_consented: read_bool_setting(db, LIVE_SYNC_CONSENTED, false).await?,
         sensor_enabled: read_bool_setting(db, SENSOR_ENABLED, true).await?,
         onboarding_completed: read_bool_setting(db, ONBOARDING_COMPLETED, false).await?,
@@ -84,6 +93,31 @@ pub(crate) async fn set_live_sync(
     hearth_storage::set_setting(
         db,
         LIVE_SYNC_ENABLED,
+        if enabled { "true" } else { "false" },
+    )
+    .await
+    .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    if enabled {
+        hearth_storage::set_setting(db, LIVE_SYNC_CONSENTED, "true")
+            .await
+            .map_err(|e| AppError::Storage(format!("{e:#}")))?;
+    }
+    read_settings(db).await
+}
+
+/// Enable/disable live resource-inventory sync. Enabling records the shared
+/// live-sync consent (the UI shows the one-time consent dialog before calling
+/// this with `enabled = true`, same as `set_live_sync`).
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn set_live_inventory(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSettings, AppError> {
+    let db = state.db().await?;
+    hearth_storage::set_setting(
+        db,
+        LIVE_INVENTORY_ENABLED,
         if enabled { "true" } else { "false" },
     )
     .await
