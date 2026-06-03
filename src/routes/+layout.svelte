@@ -20,6 +20,7 @@
     listenForOwnershipChanges,
   } from "$lib/state/data.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
+  import Avatar from "$lib/components/Avatar.svelte";
   import { onboarding, maybeStart } from "$lib/state/onboardingStore.svelte";
   import { maybeStartupImport } from "$lib/state/importStore.svelte";
   import { checkForUpdates } from "$lib/updater";
@@ -161,7 +162,7 @@
     <div class="account">
       {#if scope}
         <div class="account-handle">
-          <span class="avatar">{scope.account.handle.charAt(0).toUpperCase()}</span>
+          <Avatar text={scope.account.handle.charAt(0).toUpperCase()} />
           <div class="account-meta">
             <span class="handle">@{scope.account.handle}</span>
             <span class="scope-line">
@@ -177,7 +178,7 @@
         </div>
       {:else if scopeError}
         <div class="account-handle">
-          <span class="avatar err">!</span>
+          <Avatar text="!" error />
           <div class="account-meta">
             <span class="handle">No account</span>
             <span class="scope-error" title={scopeError}>scope unavailable</span>
@@ -186,7 +187,7 @@
         </div>
       {:else}
         <div class="account-handle loading">
-          <span class="avatar">·</span>
+          <Avatar text="·" />
           <div class="account-meta"><span class="handle muted">Loading…</span></div>
         </div>
       {/if}
@@ -300,22 +301,6 @@
     padding: 0.35rem 0.5rem;
     border-radius: 7px;
   }
-  .avatar {
-    width: 1.9rem;
-    height: 1.9rem;
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--ember), var(--ember-dim));
-    color: #1a1209;
-    font-weight: 700;
-    font-size: 0.85rem;
-  }
-  .avatar.err {
-    background: var(--bad);
-    color: #1a1209;
-  }
   .account-meta {
     display: flex;
     flex-direction: column;
@@ -419,7 +404,7 @@
     place-items: center;
     border-radius: 999px;
     background: var(--ember);
-    color: #1a1209;
+    color: var(--on-ember);
     font-size: 0.6rem;
     font-weight: 700;
     line-height: 1;

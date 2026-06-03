@@ -4,6 +4,7 @@
   import { type BpView, type MissionRef, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
   import {
     type Craftable,
     nameOf,
@@ -125,14 +126,11 @@
   }
 </script>
 
-<header class="topbar">
-  <div class="page-title">
-    <h1>Wishlist</h1>
-    <span class="subtitle">
-      {#if loading}Loading…{:else}{wantedBp.length} blueprint{wantedBp.length === 1 ? "" : "s"} · {wantedItem.length} item{wantedItem.length === 1 ? "" : "s"} wanted{/if}
-    </span>
-  </div>
-</header>
+<PageHeader title="Wishlist">
+  {#snippet subtitle()}
+    {#if loading}Loading…{:else}{wantedBp.length} blueprint{wantedBp.length === 1 ? "" : "s"} · {wantedItem.length} item{wantedItem.length === 1 ? "" : "s"} wanted{/if}
+  {/snippet}
+</PageHeader>
 
 {#if loading}
   <Loading />
@@ -264,28 +262,6 @@
 {/if}
 
 <style>
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 1.1rem 1.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .page-title {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  h1 {
-    margin: 0;
-    font-size: 1.4rem;
-    letter-spacing: -0.02em;
-  }
-  .subtitle {
-    font-size: 0.78rem;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
   .error {
     padding: 1rem 1.6rem;
     color: var(--muted);

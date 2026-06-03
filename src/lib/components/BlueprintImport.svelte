@@ -22,7 +22,7 @@
   </p>
   {#if bpImport.error}<p class="err">{bpImport.error}</p>{/if}
   <div class="row">
-    <button onclick={() => runImport()} disabled={bpImport.running}>
+    <button class="btn btn-sm" onclick={() => runImport()} disabled={bpImport.running}>
       {#if bpImport.running}<span class="spinner" aria-hidden="true"></span>{/if}
       {bpImport.running ? "Importing…" : "Import from game logs"}
     </button>
@@ -45,16 +45,6 @@
 </div>
 
 <style>
-  .card {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 1rem 1.1rem;
-    background: var(--panel);
-  }
-  .card h2 {
-    margin: 0 0 0.5rem;
-    font-size: 1rem;
-  }
   .muted {
     color: var(--muted);
     font-size: 0.83rem;
@@ -71,25 +61,6 @@
     font-size: 0.82rem;
     margin: 0.3rem 0;
   }
-  button {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.32rem 0.7rem;
-    border-radius: 6px;
-    border: 1px solid var(--line);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 0.82rem;
-  }
-  button:hover:not(:disabled) {
-    color: var(--text);
-    border-color: var(--ember-dim);
-  }
-  button:disabled {
-    opacity: 0.7;
-    cursor: progress;
-  }
   .spinner {
     display: inline-block;
     width: 0.8rem;
@@ -99,11 +70,6 @@
     border: 2px solid currentColor;
     border-top-color: transparent;
     animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .scan-note {
     font-size: 0.78rem;

@@ -3,6 +3,8 @@
   import { commands, errText, type ActiveScope, type AppSettings } from "$lib/ipc";
   import { finishOnboarding } from "$lib/state/onboardingStore.svelte";
   import { bpImport, runImport } from "$lib/state/importStore.svelte";
+  import Switch from "$lib/components/Switch.svelte";
+  import Avatar from "$lib/components/Avatar.svelte";
 
   // First-launch flow: Welcome → Your account → Tracking. Lean by design —
   // confirms the account and sets the data source; importing history and live
@@ -98,7 +100,7 @@
       <h2>Your account</h2>
       {#if scope}
         <div class="acct">
-          <span class="avatar">{scope.account.handle.charAt(0).toUpperCase()}</span>
+          <Avatar text={scope.account.handle.charAt(0).toUpperCase()} size="2.4rem" />
           <div class="acct-meta">
             <span class="handle">
               @{scope.account.handle}
@@ -119,16 +121,11 @@
           <div class="opt privacy">
             <div class="opt-head">
               <span class="opt-title">Online features</span>
-              <button
-                class="switch"
-                class:on={onlineEnabled}
-                role="switch"
-                aria-checked={onlineEnabled}
-                aria-label="Online features"
-                onclick={() => setOnline(!onlineEnabled)}
-              >
-                <span class="knob"></span>
-              </button>
+              <Switch
+                checked={onlineEnabled}
+                label="Online features"
+                onchange={(v) => setOnline(v)}
+              />
             </div>
             <p class="muted">
               Lets Hearth read your <strong>public</strong> RSI profile when you
@@ -158,16 +155,11 @@
         <div class="opt">
           <div class="opt-head">
             <span class="opt-title">Live game-log sensing</span>
-            <button
-              class="switch"
-              class:on={settings.sensor_enabled}
-              role="switch"
-              aria-checked={settings.sensor_enabled}
-              aria-label="Live game-log sensing"
-              onclick={() => setSensor(!settings!.sensor_enabled)}
-            >
-              <span class="knob"></span>
-            </button>
+            <Switch
+              checked={settings.sensor_enabled}
+              label="Live game-log sensing"
+              onchange={(v) => setSensor(v)}
+            />
           </div>
           <p class="muted">
             Watches your game log while you play and marks blueprints owned as you
@@ -179,17 +171,12 @@
           <div class="opt">
             <div class="opt-head">
               <span class="opt-title">Live blueprint sync <span class="adv">advanced</span></span>
-              <button
-                class="switch"
-                class:on={settings.live_sync_enabled}
+              <Switch
+                checked={settings.live_sync_enabled}
                 disabled={!onlineEnabled}
-                role="switch"
-                aria-checked={settings.live_sync_enabled}
-                aria-label="Live blueprint sync"
-                onclick={toggleLiveSync}
-              >
-                <span class="knob"></span>
-              </button>
+                label="Live blueprint sync"
+                onchange={() => toggleLiveSync()}
+              />
             </div>
             <p class="muted">
               Pulls your <em>complete</em> library straight from your CIG account.
@@ -206,8 +193,8 @@
                   SC's ToS, at your own risk.
                 </p>
                 <div class="consent-actions">
-                  <button class="ghost sm" onclick={() => (showConsent = false)}>Cancel</button>
-                  <button class="primary sm" onclick={acceptConsent}>I understand — enable</button>
+                  <button class="btn btn-sm" onclick={() => (showConsent = false)}>Cancel</button>
+                  <button class="btn btn-sm btn-primary" onclick={acceptConsent}>I understand — enable</button>
                 </div>
               </div>
             {/if}
@@ -217,7 +204,7 @@
         <div class="opt">
           <div class="opt-head">
             <span class="opt-title">Import past blueprints</span>
-            <button class="ghost sm" onclick={() => runImport()} disabled={bpImport.running}>
+            <button class="btn btn-sm" onclick={() => runImport()} disabled={bpImport.running}>
               {bpImport.running ? "Importing…" : "Start import"}
             </button>
           </div>
@@ -231,14 +218,14 @@
 
     <div class="actions">
       {#if step === 0}
-        <button class="ghost" onclick={finishOnboarding}>Skip setup</button>
-        <button class="primary" onclick={next}>Get started</button>
+        <button class="btn btn-lg" onclick={finishOnboarding}>Skip setup</button>
+        <button class="btn btn-lg btn-primary" onclick={next}>Get started</button>
       {:else if step === 1}
-        <button class="ghost" onclick={back}>Back</button>
-        <button class="primary" onclick={next}>Continue</button>
+        <button class="btn btn-lg" onclick={back}>Back</button>
+        <button class="btn btn-lg btn-primary" onclick={next}>Continue</button>
       {:else}
-        <button class="ghost" onclick={back}>Back</button>
-        <button class="primary" onclick={finishOnboarding}>Finish</button>
+        <button class="btn btn-lg" onclick={back}>Back</button>
+        <button class="btn btn-lg btn-primary" onclick={finishOnboarding}>Finish</button>
       {/if}
     </div>
 
@@ -302,17 +289,6 @@
   .intro {
     margin-bottom: 0.1rem;
   }
-  .adv {
-    font-size: 0.58rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--faint);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 0.05rem 0.3rem;
-    margin-left: 0.3rem;
-    vertical-align: middle;
-  }
   .consent {
     margin-top: 0.6rem;
     padding-top: 0.6rem;
@@ -336,17 +312,6 @@
     border-radius: 10px;
     background: var(--panel);
     margin: 0.3rem 0;
-  }
-  .avatar {
-    width: 2.4rem;
-    height: 2.4rem;
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--ember), var(--ember-dim));
-    color: #1a1209;
-    font-weight: 700;
   }
   .acct-meta {
     display: flex;
@@ -392,74 +357,6 @@
     display: flex;
     gap: 0.7rem;
     margin-top: 0.8rem;
-  }
-  button.primary {
-    padding: 0.5rem 1.2rem;
-    border-radius: 8px;
-    border: 1px solid var(--ember);
-    background: var(--ember);
-    color: #1a1209;
-    font-weight: 600;
-    cursor: pointer;
-    font-size: 0.9rem;
-  }
-  button.ghost {
-    padding: 0.5rem 1rem;
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 0.9rem;
-  }
-  button.ghost:hover {
-    color: var(--text);
-    border-color: var(--ember-dim);
-  }
-  /* Small inline action (Start import, consent buttons). */
-  button.sm {
-    padding: 0.32rem 0.7rem;
-    font-size: 0.8rem;
-  }
-  button.sm:disabled {
-    opacity: 0.6;
-    cursor: progress;
-  }
-
-  /* Toggle switch (matches Settings). */
-  .switch {
-    width: 2.2rem;
-    height: 1.2rem;
-    flex: 0 0 auto;
-    padding: 0;
-    border-radius: 999px;
-    border: 1px solid var(--line);
-    background: var(--panel-2);
-    cursor: pointer;
-    position: relative;
-    transition: background 120ms, border-color 120ms;
-  }
-  .switch.on {
-    background: var(--ember-glow);
-    border-color: var(--ember-dim);
-  }
-  .switch .knob {
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 1rem;
-    height: 1rem;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: transform 120ms, background 120ms;
-  }
-  .switch.on .knob {
-    transform: translateX(1rem);
-    background: var(--ember);
-  }
-  .switch:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
   .off-hint {
     color: var(--ember);

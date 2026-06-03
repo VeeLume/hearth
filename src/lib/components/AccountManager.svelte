@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { commands, errText, type AccountWithAliases, type AppSettings } from "$lib/ipc";
   import Loading from "$lib/components/Loading.svelte";
+  import Switch from "$lib/components/Switch.svelte";
+  import Avatar from "$lib/components/Avatar.svelte";
 
   // Reusable accounts manager — rendered in Settings → Account, and (later) in
   // the first-launch onboarding. RSI handles are mutable (renames); identity is
@@ -118,17 +120,12 @@
         Local game-log tracking and manual editing still work.
       </p>
       <div class="lookups-row">
-        <button
-          class="switch"
-          class:on={onlineEnabled}
+        <Switch
+          checked={onlineEnabled}
           disabled={togglingOnline}
-          role="switch"
-          aria-checked={onlineEnabled}
-          aria-label="Online features"
-          onclick={() => setOnline(!onlineEnabled)}
-        >
-          <span class="knob"></span>
-        </button>
+          label="Online features"
+          onchange={(v) => setOnline(v)}
+        />
         <span class="switch-label">{onlineEnabled ? "Online" : "Offline"}</span>
       </div>
     </div>
@@ -145,7 +142,7 @@
       <ul class="acct-list">
         {#each accounts as a (a.account.id)}
           <li class="acct">
-            <span class="avatar">{a.account.handle.charAt(0).toUpperCase()}</span>
+            <Avatar text={a.account.handle.charAt(0).toUpperCase()} size="2rem" />
             <div class="acct-body">
               <div class="acct-head">
                 <span class="acct-handle">@{a.account.handle}</span>
@@ -156,7 +153,7 @@
                   <span class="badge dim" title="Numeric accountId from the launcher / logs">id {a.account.account_hint}</span>
                 {/if}
                 <button
-                  class="reverify"
+                  class="btn btn-sm reverify"
                   onclick={() => reverify(a.account.id)}
                   disabled={verifyingId === a.account.id || !onlineEnabled}
                   title={onlineEnabled
@@ -179,7 +176,7 @@
                   bind:value={formerDraft[a.account.id]}
                   onkeydown={(e) => e.key === "Enter" && addFormerHandle(a.account.id)}
                 />
-                <button onclick={() => addFormerHandle(a.account.id)}>Add</button>
+                <button class="btn btn-sm" onclick={() => addFormerHandle(a.account.id)}>Add</button>
               </div>
             </div>
           </li>
@@ -201,7 +198,7 @@
               {#each accounts as a (a.account.id)}<option value={a.account.id}>@{a.account.handle}</option>{/each}
             </select>
             <button
-              class="danger"
+              class="btn btn-sm btn-danger"
               disabled={!mergeFrom || !mergeInto || mergeFrom === mergeInto || merging}
               onclick={doMerge}
             >{merging ? "Merging…" : "Merge"}</button>
@@ -241,11 +238,6 @@
 
   .acct-list { list-style: none; margin: 0.4rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
   .acct { display: flex; gap: 0.7rem; padding: 0.6rem; border: 1px solid var(--line); border-radius: 8px; }
-  .avatar {
-    width: 2rem; height: 2rem; flex: 0 0 auto; display: grid; place-items: center;
-    border-radius: 50%; background: linear-gradient(135deg, var(--ember), var(--ember-dim));
-    color: #1a1209; font-weight: 700; font-size: 0.85rem;
-  }
   .acct-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.35rem; }
   .acct-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .acct-handle { font-weight: 600; font-size: 0.92rem; }
@@ -264,13 +256,6 @@
     border: 1px solid var(--line); border-radius: 6px;
     padding: 0.3rem 0.5rem; font-size: 0.82rem;
   }
-  button {
-    padding: 0.32rem 0.7rem; border-radius: 6px; border: 1px solid var(--line);
-    background: transparent; color: var(--muted); cursor: pointer; font-size: 0.82rem;
-  }
-  button:hover:not(:disabled) { color: var(--text); border-color: var(--ember-dim); }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button.danger:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
 
   .merge { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--line); }
   .merge-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
@@ -278,23 +263,5 @@
   .confirm { font-size: 0.78rem; color: var(--ember); margin: 0.45rem 0 0; }
 
   /* ── Privacy toggle ── */
-  .adv {
-    font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--faint); border: 1px solid var(--line); border-radius: 4px;
-    padding: 0.05rem 0.35rem; margin-left: 0.4rem; vertical-align: middle;
-  }
   .lookups-row { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.7rem; }
-  .switch {
-    width: 2.2rem; height: 1.2rem; flex: 0 0 auto; padding: 0;
-    border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2);
-    cursor: pointer; position: relative; transition: background 120ms, border-color 120ms;
-  }
-  .switch.on { background: var(--ember-glow); border-color: var(--ember-dim); }
-  .switch .knob {
-    position: absolute; top: 1px; left: 1px; width: 1rem; height: 1rem;
-    border-radius: 50%; background: var(--muted); transition: transform 120ms, background 120ms;
-  }
-  .switch.on .knob { transform: translateX(1rem); background: var(--ember); }
-  .switch:disabled { opacity: 0.6; cursor: progress; }
-  .switch-label { font-size: 0.82rem; color: var(--muted); }
 </style>

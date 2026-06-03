@@ -4,6 +4,7 @@
   import { commands, type BpView, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
   import {
     type Craftable,
     nameOf,
@@ -346,13 +347,10 @@
   ];
 </script>
 
-<header class="topbar">
-  <div class="page-title">
-    <h1>Catalog</h1>
-    <span class="subtitle">
-      {#if loading}Loading…{:else}{blueprints.length} blueprints · {ownedCount} owned{/if}
-    </span>
-  </div>
+<PageHeader title="Catalog">
+  {#snippet subtitle()}
+    {#if loading}Loading…{:else}{blueprints.length} blueprints · {ownedCount} owned{/if}
+  {/snippet}
   <input
     class="search"
     type="search"
@@ -384,7 +382,7 @@
       </svg>
     </button>
   {/if}
-</header>
+</PageHeader>
 
 {#if loading}
   <Loading />
@@ -628,28 +626,6 @@
 {/if}
 
 <style>
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 1.1rem 1.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .page-title {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  h1 {
-    margin: 0;
-    font-size: 1.4rem;
-    letter-spacing: -0.02em;
-  }
-  .subtitle {
-    font-size: 0.78rem;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
   .search {
     margin-left: auto;
     width: 280px;
@@ -675,14 +651,8 @@
     color: var(--bad);
   }
 
-  /* Spin animation — used by the live-sync button below while syncing. */
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Catalog live-sync button — only shown when live sync is enabled. */
+  /* Catalog live-sync button — only shown when live sync is enabled.
+     (Uses the global `spin` keyframe from app.css.) */
   .sync-btn {
     flex: 0 0 auto;
     display: grid;
@@ -895,7 +865,7 @@
   .own-toggle.on {
     background: var(--ember);
     border-color: var(--ember);
-    color: #1a1209;
+    color: var(--on-ember);
     font-weight: 700;
   }
   /* The expand button is a transparent affordance over most of the row;
@@ -1062,7 +1032,7 @@
     border-color: var(--ember-dim);
   }
   .bundle-row .variant-count.full {
-    color: #1a1209;
+    color: var(--on-ember);
     background: var(--ember);
     border-color: var(--ember);
     font-weight: 700;

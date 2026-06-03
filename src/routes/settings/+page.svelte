@@ -3,6 +3,8 @@
   import { commands, errText, type AppSettings } from "$lib/ipc";
   import AccountManager from "$lib/components/AccountManager.svelte";
   import BlueprintImport from "$lib/components/BlueprintImport.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
+  import Switch from "$lib/components/Switch.svelte";
   import { openOnboarding } from "$lib/state/onboardingStore.svelte";
 
   let tab = $state<"account" | "import" | "advanced">("account");
@@ -86,12 +88,9 @@
   }
 </script>
 
-<header class="topbar">
-  <div class="page-title">
-    <h1>Settings</h1>
-    <span class="subtitle">Account, sync &amp; preferences</span>
-  </div>
-</header>
+<PageHeader title="Settings" flush>
+  {#snippet subtitle()}Account, sync &amp; preferences{/snippet}
+</PageHeader>
 
 <div class="tabs">
   <button class="tab" class:active={tab === "account"} onclick={() => (tab = "account")}>Account</button>
@@ -114,16 +113,11 @@
           <em>received</em> during play.
         </p>
         <div class="row">
-          <button
-            class="switch"
-            class:on={settings.sensor_enabled}
-            role="switch"
-            aria-checked={settings.sensor_enabled}
-            aria-label="Live game-log sensing"
-            onclick={() => setSensor(!settings!.sensor_enabled)}
-          >
-            <span class="knob"></span>
-          </button>
+          <Switch
+            checked={settings.sensor_enabled}
+            label="Live game-log sensing"
+            onchange={(v) => setSensor(v)}
+          />
           <span class="switch-label">{settings.sensor_enabled ? "On" : "Off"}</span>
         </div>
       </div>
@@ -150,22 +144,17 @@
         </p>
       {/if}
       <div class="row">
-        <button
-          class="switch"
-          class:on={settings.live_sync_enabled}
+        <Switch
+          checked={settings.live_sync_enabled}
           disabled={busy || !settings.online_enabled}
-          role="switch"
-          aria-checked={settings.live_sync_enabled}
-          aria-label="Live blueprint sync"
-          onclick={() => setEnabled(!settings!.live_sync_enabled)}
-        >
-          <span class="knob"></span>
-        </button>
+          label="Live blueprint sync"
+          onchange={(v) => setEnabled(v)}
+        />
         <span class="switch-label">{settings.live_sync_enabled ? "Enabled" : "Disabled"}</span>
       </div>
       {#if settings.live_sync_enabled}
         <div class="row">
-          <button class="action-btn" onclick={syncNow} disabled={syncing || !settings.online_enabled}>
+          <button class="btn" onclick={syncNow} disabled={syncing || !settings.online_enabled}>
             {syncing ? "Syncing…" : "Sync now"}
           </button>
           {#if lastSync}<span class="result ok">{lastSync}</span>{/if}
@@ -178,7 +167,7 @@
     <h2>First-launch setup</h2>
     <p class="muted">Re-run the welcome walkthrough (account confirmation + tracking setup).</p>
     <div class="row">
-      <button class="action-btn" onclick={openOnboarding}>Re-run onboarding</button>
+      <button class="btn" onclick={openOnboarding}>Re-run onboarding</button>
     </div>
   </div>
   <div class="card">
@@ -191,7 +180,7 @@
       blueprints, accounts) is untouched.
     </p>
     <div class="row">
-      <button class="danger" onclick={wipeCache} disabled={wiping}>
+      <button class="btn btn-danger" onclick={wipeCache} disabled={wiping}>
         {wiping ? "Wiping…" : "Wipe SC cache & restart"}
       </button>
       {#if lastResult}
@@ -213,19 +202,13 @@
       only ever touches your own account, but you use it at your own risk.
     </p>
     <div class="modal-actions">
-      <button class="action-btn" onclick={() => (showConsent = false)}>Cancel</button>
-      <button class="action-btn primary" onclick={acceptConsent}>I understand — enable</button>
+      <button class="btn" onclick={() => (showConsent = false)}>Cancel</button>
+      <button class="btn btn-primary" onclick={acceptConsent}>I understand — enable</button>
     </div>
   </div>
 {/if}
 
 <style>
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 1.1rem 1.6rem 0.6rem;
-  }
   .tabs {
     display: flex;
     gap: 0.2rem;
@@ -249,20 +232,6 @@
     color: var(--ember);
     border-bottom-color: var(--ember);
   }
-  .page-title {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  h1 {
-    margin: 0;
-    font-size: 1.4rem;
-    letter-spacing: -0.02em;
-  }
-  .subtitle {
-    font-size: 0.78rem;
-    color: var(--muted);
-  }
   .page {
     flex: 1;
     overflow-y: auto;
@@ -270,19 +239,6 @@
     display: flex;
     flex-direction: column;
     gap: 1.2rem;
-  }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 1rem 1.1rem;
-  }
-  .card h2 {
-    margin: 0 0 0.5rem;
-    font-size: 0.95rem;
-    color: var(--text);
-    font-weight: 600;
-    letter-spacing: -0.005em;
   }
   .muted {
     margin: 0;
@@ -304,24 +260,6 @@
     gap: 0.8rem;
     margin-top: 0.8rem;
   }
-  button.danger {
-    font-size: 0.82rem;
-    padding: 0.4rem 0.9rem;
-    background: transparent;
-    color: var(--bad);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 90ms;
-  }
-  button.danger:hover:not(:disabled) {
-    border-color: var(--bad);
-    background: rgba(255, 90, 130, 0.08);
-  }
-  button.danger:disabled {
-    opacity: 0.5;
-    cursor: progress;
-  }
   .result {
     font-size: 0.78rem;
   }
@@ -335,83 +273,6 @@
     margin: 0.7rem 0 0;
     font-size: 0.8rem;
     color: var(--ember);
-  }
-
-  /* ── Live blueprint sync ── */
-  .adv {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--faint);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 0.05rem 0.35rem;
-    margin-left: 0.4rem;
-    vertical-align: middle;
-  }
-  .action-btn {
-    font-size: 0.82rem;
-    padding: 0.4rem 0.9rem;
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 90ms;
-  }
-  .action-btn:hover:not(:disabled) {
-    color: var(--text);
-    border-color: var(--ember-dim);
-  }
-  .action-btn:disabled {
-    opacity: 0.5;
-    cursor: progress;
-  }
-  .action-btn.primary,
-  .action-btn.primary:hover:not(:disabled) {
-    background: var(--ember);
-    border-color: var(--ember);
-    color: #1a1209;
-    font-weight: 600;
-  }
-
-  .switch {
-    width: 2.2rem;
-    height: 1.2rem;
-    flex: 0 0 auto;
-    padding: 0;
-    border-radius: 999px;
-    border: 1px solid var(--line);
-    background: var(--panel-2);
-    cursor: pointer;
-    position: relative;
-    transition: background 120ms, border-color 120ms;
-  }
-  .switch.on {
-    background: var(--ember-glow);
-    border-color: var(--ember-dim);
-  }
-  .switch .knob {
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 1rem;
-    height: 1rem;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: transform 120ms, background 120ms;
-  }
-  .switch.on .knob {
-    transform: translateX(1rem);
-    background: var(--ember);
-  }
-  .switch:disabled {
-    opacity: 0.6;
-    cursor: progress;
-  }
-  .switch-label {
-    font-size: 0.82rem;
-    color: var(--muted);
   }
 
   /* Consent modal. */

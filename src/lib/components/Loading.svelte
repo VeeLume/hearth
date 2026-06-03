@@ -60,11 +60,6 @@
     border-top-color: var(--ember);
     animation: spin 0.8s linear infinite;
   }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
   .loading-msg {
     margin: 0;
     font-size: 0.9rem;

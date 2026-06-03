@@ -4,6 +4,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { type MissionView } from "$lib/ipc";
   import Loading from "$lib/components/Loading.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
   import {
     data,
     owned,
@@ -139,13 +140,10 @@
   ];
 </script>
 
-<header class="topbar">
-  <div class="page-title">
-    <h1>Missions</h1>
-    <span class="subtitle">
-      {#if loading}Loading…{:else}{missions.length} missions · {outstandingCount} with blueprints to collect{/if}
-    </span>
-  </div>
+<PageHeader title="Missions">
+  {#snippet subtitle()}
+    {#if loading}Loading…{:else}{missions.length} missions · {outstandingCount} with blueprints to collect{/if}
+  {/snippet}
   <input
     class="search"
     type="search"
@@ -153,7 +151,7 @@
     bind:value={query}
     disabled={loading}
   />
-</header>
+</PageHeader>
 
 {#if loading}
   <Loading />
@@ -315,16 +313,6 @@
 {/if}
 
 <style>
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 1.1rem 1.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .page-title { display: flex; flex-direction: column; gap: 0.15rem; }
-  h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.02em; }
-  .subtitle { font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
   .search {
     margin-left: auto;
     width: 280px;
@@ -412,7 +400,7 @@
     padding: 0.15rem 0.2rem;
   }
   .bp-count.some { color: var(--ember); border-color: var(--ember-dim); }
-  .bp-count.full { color: #1a1209; background: var(--ember); border-color: var(--ember); font-weight: 700; }
+  .bp-count.full { color: var(--on-ember); background: var(--ember); border-color: var(--ember); font-weight: 700; }
   .bp-count.empty { color: var(--faint); background: transparent; border-color: transparent; }
 
   .own-toggle {
@@ -430,7 +418,7 @@
     transition: all 90ms;
   }
   .own-toggle:hover { border-color: var(--ember-dim); }
-  .own-toggle.on { background: var(--ember); border-color: var(--ember); color: #1a1209; font-weight: 700; }
+  .own-toggle.on { background: var(--ember); border-color: var(--ember); color: var(--on-ember); font-weight: 700; }
   .own-toggle.small { width: 1.2rem; height: 1.2rem; font-size: 0.7rem; }
 
   .m-expand {

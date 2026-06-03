@@ -20,6 +20,10 @@
   --ember: #e8915a;
   --ember-dim: #b86a3e;
   --ember-glow: rgba(232, 145, 90, 0.14);
+  /* Foreground for text/icons sitting *on* an ember fill (filled buttons,
+   * the avatar initial, the "owned" checkmark). Near-black warm brown so it
+   * reads on the orange. Previously hard-coded as #1a1209 in ~8 places. */
+  --on-ember: #1a1209;
 
   /* Status. */
   --good: #6cc08a;
@@ -77,4 +81,107 @@ input {
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* ───────────────────────── Design-system primitives ─────────────────────
+ * These are intentionally GLOBAL (not scoped to one component). They were
+ * each copy-pasted into several component <style> blocks before; living here
+ * means one edit changes them everywhere. Use them by class name in markup.
+ *
+ * Scoped component styles still win over these on a tie, because Svelte adds
+ * a hash class (e.g. `.card.svelte-abc`) that raises specificity — so a
+ * component can still override a primitive locally when it really needs to. */
+
+/* Spinner rotation — referenced by .spinner elements in several components.
+ * Defined once here; Svelte only renames @keyframes that are declared inside
+ * a component, so a bare `animation: spin …` in a scoped block resolves to
+ * this global one. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Card — the standard bordered panel used across Settings and account UIs. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+}
+.card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* Button system. `.btn` is the base (ghost/outline, small). Layer one size
+ * modifier (.btn-sm / .btn-lg) and/or one intent (.btn-primary / .btn-danger).
+ *   <button class="btn">…</button>            outline, default size
+ *   <button class="btn btn-primary">…</button> ember-filled call to action
+ *   <button class="btn btn-sm btn-danger">…</button> small destructive */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: color 90ms, border-color 90ms, background 90ms;
+}
+.btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--ember-dim);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.btn-sm {
+  padding: 0.32rem 0.7rem;
+  font-size: 0.8rem;
+}
+.btn-lg {
+  padding: 0.5rem 1.1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.btn-primary,
+.btn-primary:hover:not(:disabled) {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: var(--on-ember);
+  font-weight: 600;
+}
+.btn-danger {
+  color: var(--bad);
+}
+.btn-danger:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+}
+
+/* "advanced" / "privacy" qualifier pill that sits beside a section heading. */
+.adv {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+
+/* Text label sitting next to a <Switch />. */
+.switch-label {
+  font-size: 0.82rem;
+  color: var(--muted);
 }
