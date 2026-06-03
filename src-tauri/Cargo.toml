@@ -65,7 +65,7 @@ hearth-export.workspace = true
 # parsing + the items/missions/crafting indices, all via the umbrella.
 sc-holotable.workspace = true
 
-sc-dossier = { workspace = true, optional = true}
+sc-dossier = { workspace = true, optional = true }
 
 [features]
 default = ["live-sync"]
