@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Dark disc: Hearth bg to panel, lit slightly from the base. -->
+    <radialGradient id="disc" cx="50%" cy="62%" r="62%">
+      <stop offset="0%" stop-color="#20202a"/>
+      <stop offset="70%" stop-color="#16161b"/>
+      <stop offset="100%" stop-color="#0e0e11"/>
+    </radialGradient>
+    <!-- Outer flame: ember-dim base → ember → bright tip. -->
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#b86a3e"/>
+      <stop offset="45%" stop-color="#e8915a"/>
+      <stop offset="100%" stop-color="#ffb878"/>
+    </linearGradient>
+    <!-- Inner core: hotter, near-white at the heart. -->
+    <linearGradient id="core" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#e8915a"/>
+      <stop offset="55%" stop-color="#ffce96"/>
+      <stop offset="100%" stop-color="#fff3df"/>
+    </linearGradient>
+    <!-- Soft ember glow around the flame. -->
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Distinct circular mark (not langpatch's rounded square). -->
+  <circle cx="256" cy="256" r="244" fill="url(#disc)"/>
+  <!-- Faint ember rim so it doesn't vanish on dark backgrounds. -->
+  <circle cx="256" cy="256" r="243" fill="none" stroke="#e8915a" stroke-width="2" opacity="0.22"/>
+  <!-- Warm pool of light at the base, hinting at the hearth. -->
+  <ellipse cx="256" cy="372" rx="120" ry="34" fill="#e8915a" opacity="0.16"/>
+
+  <g filter="url(#glow)">
+    <!-- Outer flame: teardrop with a slight curl to the right. -->
+    <path fill="url(#flame)" d="M256 132
+      C 252 196, 300 214, 322 268
+      C 340 312, 330 360, 292 384
+      C 312 350, 308 320, 282 300
+      C 296 336, 278 360, 252 360
+      C 222 360, 200 336, 198 304
+      C 196 268, 224 244, 240 210
+      C 252 184, 256 158, 256 132 Z"/>
+    <!-- Inner core flame. -->
+    <path fill="url(#core)" d="M256 222
+      C 254 262, 284 276, 292 308
+      C 298 334, 284 356, 262 360
+      C 274 340, 270 322, 256 312
+      C 262 330, 252 346, 240 344
+      C 224 340, 216 322, 220 302
+      C 224 280, 244 262, 256 222 Z"/>
+  </g>
+</svg>
