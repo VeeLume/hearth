@@ -6,18 +6,21 @@
 //! Each builder makes its own indices over the same datacore (cheap relative
 //! to the parse), so they stay self-contained.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use hearth_core::sc_data::guid_string;
 use hearth_core::{
-    BpPoolReward, BpRewardEntry, BpView, ItemRewardView, MissionView, RepRewardView,
-    ScripRewardView,
+    BpPoolReward, BpRewardEntry, BpView, DifficultyView, EncounterView, FactionView,
+    ItemRewardView, MissionCategoryView, MissionRef, MissionView, PayoutView, PlaceView, RegionView,
+    RepRequirementView, RepRewardView, ScripRewardView, ShipSlotView, WaveView,
 };
 use sc_holotable::asset::{Datacore, LocaleKey, LocaleMap, RecordPaths, class_crc};
 use sc_holotable::crafting::{Blueprints, Categories, Process};
 use sc_holotable::items::{ItemCatalog, Items};
+// NB: `sc_holotable::locations::Locations` (the typed universe index) is named
+// `Locations` and so is `sc_missions::Locations`; we only use the former here.
 use sc_holotable::locations::Locations;
-use sc_holotable::missions::{Mission, Missions, RewardAmount, RewardCurrencies};
+use sc_holotable::missions::{Encounter, Mission, Missions, PrereqView, RewardAmount, RewardCurrencies};
 use sc_holotable::resources::Resources;
 
 use super::CookedData;
@@ -177,20 +180,15 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
     let currencies = RewardCurrencies::build(datacore);
     let missions = Missions::build(datacore);
     let pools = &missions.blueprints;
-    let localities = &missions.localities;
 
-    // Group contracts into templates. Localities are *aggregated* (same
-    // mission offered in many places = one row with a region list), not split
-    // — splitting by location would re-introduce the duplication we set out to
-    // remove. Templates are kept distinct by the axes that make missions
-    // genuinely different:
-    //   - reward identity (faction-specific pools, rep faction, scrip, …),
-    //   - encounter shape (difficulty tiers — a 2-ship VeryEasy and a 4-ship
-    //     Hard version of one contract are different missions).
-    // Validated against SCMDB's blueprint-mission count via a diagnostic:
-    // title+desc+reward = 459, +encounter = 483 (~87% of SCMDB's 558; the
-    // rest is SCMDB splitting by location/standing, which we deliberately
-    // don't).
+    // Collapse raw expansions into displayed missions. The key is the
+    // player-meaningful identity: title + description + reward identity (which
+    // BPs / faction / scrip / item kinds) + **payout variant** (difficulty
+    // levels + buy-in + time — the visible aUEC the player differentiates by).
+    // Location and encounter are *not* in the key: they're aggregated into the
+    // entry as facets the UI groups / sub-splits. The frontend pools these
+    // further (by reward identity, sub-split by system) per the consumer-
+    // decides-grouping model.
     type PoolKey = (Option<LocaleKey>, Option<LocaleKey>, String, String);
     let mut groups: HashMap<PoolKey, Vec<&Mission>> = HashMap::new();
     for m in missions.iter() {
@@ -198,22 +196,27 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
             m.title_key.clone(),
             m.description_key.clone(),
             reward_signature(m),
-            encounter_summary(m).unwrap_or_default(),
+            payout_signature(m),
         );
         groups.entry(key).or_default().push(m);
     }
 
     let mut out = Vec::with_capacity(groups.len());
     for members in groups.values() {
-        // Members share title/description/rewards (same template); the first
-        // is the representative. Localities are what vary → aggregated below.
+        // Members share title/description/rewards/payout (same entry); the
+        // first is the representative. Localities are what vary → aggregated.
         let rep = members[0];
         let r = &rep.rewards;
 
-        let (uec_fixed, uec_calculated) = match r.uec {
-            RewardAmount::Fixed(n) => (Some(n), false),
-            RewardAmount::Calculated => (None, true),
-            RewardAmount::None => (None, false),
+        let payout = PayoutView {
+            calculated: matches!(r.uec, RewardAmount::Calculated),
+            fixed: match r.uec {
+                RewardAmount::Fixed(n) => Some(n),
+                _ => None,
+            },
+            estimate: estimate_uec(rep),
+            buy_in: rep.buy_in,
+            time_to_complete: rep.time_to_complete,
         };
         let scrip = r
             .scrip
@@ -274,26 +277,20 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
             }
         }
 
-        // Regions: distinct locality labels across all pooled members.
-        let mut seen_regions = HashSet::new();
-        let mut regions = Vec::new();
-        for m in members {
-            for guid in &m.mission_span {
-                if let Some(view) = localities.get(guid) {
-                    let label = view.region_label(locale);
-                    if !label.is_empty() && seen_regions.insert(label.clone()) {
-                        regions.push(label);
-                    }
-                }
-            }
-        }
-        regions.sort();
-
         out.push(MissionView {
             mission_id: guid_string(&rep.id),
-            title: rep.title(locale).map(clean_mission_text),
+            title: missions.title_text(rep, locale),
             debug_name: rep.debug_name.clone(),
-            description: rep.description(locale).map(clean_mission_text),
+            description: missions.description_text(rep, locale),
+            category: build_category(rep, &missions, locale),
+            faction: build_faction(rep, &missions, locale),
+            difficulty: rep.difficulty.map(|d| DifficultyView {
+                mechanical_skill: d.mechanical_skill,
+                mental_load: d.mental_load,
+                risk_of_loss: d.risk_of_loss,
+                game_knowledge: d.game_knowledge,
+            }),
+            payout,
             once_only: rep.availability.once_only,
             shareable: rep.shareable,
             illegal: rep.illegal_flag,
@@ -303,14 +300,15 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
                 .completion
                 .as_ref()
                 .map(|d| d.mean_seconds),
-            uec_fixed,
-            uec_calculated,
             scrip,
             reputation,
             item_rewards,
             blueprint_rewards,
-            regions,
-            encounter_summary: encounter_summary(rep),
+            rep_required: build_rep_required(rep, &missions, locale),
+            chain_required: build_chain(rep, &missions, locale),
+            locations: build_locations(members, &missions, locale),
+            encounters: build_encounters(rep, &missions, &items, locale),
+            placeholders: missions.unresolved_markers(rep, locale),
             instance_count: members.len() as u32,
         });
     }
@@ -326,11 +324,10 @@ fn build_missions(datacore: &Datacore, locale: &LocaleMap) -> Vec<MissionView> {
     out
 }
 
-/// Distinguishing reward identity for pooling. Two contracts sharing a
-/// title+description but different rewards are different missions — most
-/// tellingly the **reputation faction** (the giving faction), plus the BP
-/// pools, scrip currencies, item unlocks, and any fixed aUEC. (Calculated
-/// aUEC is engine-computed and not a stable splitter, so it's excluded.)
+/// Distinguishing reward **identity** for pooling — the *kinds* of payoff, not
+/// amounts: BP pools, reputation faction, scrip currencies, item unlocks. Two
+/// contracts sharing a title+description but different reward identity are
+/// different missions (e.g. Region A/B vs C/D blueprint pools).
 fn reward_signature(m: &Mission) -> String {
     let r = &m.rewards;
     let mut parts: Vec<String> = Vec::new();
@@ -348,63 +345,293 @@ fn reward_signature(m: &Mission) -> String {
     for it in &r.items {
         parts.push(format!("i{}", guid_string(&it.entity_class)));
     }
-    if let RewardAmount::Fixed(n) = r.uec {
-        parts.push(format!("u{n}"));
-    }
     parts.sort();
     parts.dedup();
     parts.join(",")
 }
 
-/// Render `~mission(Var)` runtime-substitution markers as readable `[Var]`
-/// placeholders (the engine fills these per spawn; a static view can't).
-fn clean_mission_text(s: &str) -> String {
-    const MARK: &str = "~mission(";
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(pos) = rest.find(MARK) {
-        out.push_str(&rest[..pos]);
-        let after = &rest[pos + MARK.len()..];
-        match after.find(')') {
-            Some(end) => {
-                out.push('[');
-                out.push_str(&after[..end]);
-                out.push(']');
-                rest = &after[end + 1..];
-            }
-            None => {
-                // Unterminated marker — emit the remainder verbatim.
-                out.push_str(&rest[pos..]);
-                return out;
-            }
+/// Payout-variant signature — the visible aUEC differentiator. Driven by the
+/// difficulty profile (the hidden axis players don't see) plus buy-in + time.
+/// Same payout inputs ⇒ same displayed reward, so these collapse; different
+/// inputs split (the "harder ⇒ bigger payout" rows). Independent of the (still
+/// unported) reward formula — splitting on the inputs is correct regardless.
+fn payout_signature(m: &Mission) -> String {
+    let d = m
+        .difficulty
+        .map(|d| {
+            format!(
+                "{}-{}-{}-{}",
+                d.mechanical_skill, d.mental_load, d.risk_of_loss, d.game_knowledge
+            )
+        })
+        .unwrap_or_default();
+    match m.rewards.uec {
+        RewardAmount::Fixed(n) => format!("f{n}"),
+        _ => format!("{d}|b{}|t{}", m.buy_in, m.time_to_complete),
+    }
+}
+
+/// Estimate the engine-calculated aUEC payout for a `Calculated` reward.
+///
+/// The engine pays out **exponentially** in difficulty: the per-minute reward
+/// rate grows by a constant factor (~1.354×) per difficulty level, not
+/// linearly. The model is
+///
+/// ```text
+/// aUEC ≈ round₂₅₀( 1232 × 1.354^weighted_difficulty × time_minutes )
+/// ```
+///
+/// where `weighted_difficulty` is the dot product of the four difficulty axis
+/// levels with their per-profile weights, and time is in **minutes**. Fitted
+/// against 13 known SCMDB payouts spanning difficulty levels 2–5 — it
+/// reproduces every one exactly after the 250-aUEC rounding (max error 0.0%).
+/// (An earlier `1035 × weighted × time` linear model was a tangent that only
+/// matched at level 4; the two extra low/high-difficulty samples revealed the
+/// curve. There is no floor term — payout stays strictly proportional to time.)
+///
+/// Returns `None` for fixed/absent payouts or when difficulty inputs are
+/// missing (no profile weights ⇒ can't weight the axes). Cross-system distance
+/// scaling is runtime-derived and intentionally not modelled here.
+fn estimate_uec(m: &Mission) -> Option<i32> {
+    if !matches!(m.rewards.uec, RewardAmount::Calculated) {
+        return None;
+    }
+    let d = m.difficulty?;
+    let w = d.weights?;
+    let weighted = d.mechanical_skill as f32 * w[0]
+        + d.mental_load as f32 * w[1]
+        + d.risk_of_loss as f32 * w[2]
+        + d.game_knowledge as f32 * w[3];
+    if weighted <= 0.0 || m.time_to_complete <= 0.0 {
+        return None;
+    }
+    let raw = 1232.0 * 1.354_f32.powf(weighted) * m.time_to_complete;
+    Some(((raw / 250.0).round() * 250.0) as i32)
+}
+
+/// Resolve the mission category (`MissionType`) name + icon.
+fn build_category(m: &Mission, missions: &Missions, locale: &LocaleMap) -> Option<MissionCategoryView> {
+    let info = missions.mission_types.get(&m.category?)?;
+    Some(MissionCategoryView {
+        name: locale.resolve(&info.name_key).map(str::to_owned),
+        icon: info.icon_name.clone(),
+    })
+}
+
+/// Resolve the mission's reputation faction → display name (+ stable guid key).
+fn build_faction(m: &Mission, missions: &Missions, locale: &LocaleMap) -> Option<FactionView> {
+    let guid = m.faction?;
+    let name = missions
+        .factions
+        .get(&guid)
+        .and_then(|f| locale.resolve(&f.display_name_key))
+        .map(str::to_owned);
+    Some(FactionView {
+        guid: guid_string(&guid),
+        name,
+    })
+}
+
+/// Resolve the rep-acceptance requirements (faction + standing-tier window).
+/// Includes career-contract rep gates (handler faction + contract standing),
+/// which sc-missions now surfaces as synthetic reputation prereqs.
+fn build_rep_required(
+    m: &Mission,
+    missions: &Missions,
+    locale: &LocaleMap,
+) -> Vec<RepRequirementView> {
+    let standing = |g: &Option<sc_holotable::asset::Guid>| {
+        g.as_ref()
+            .and_then(|g| missions.rep_standings.get(g))
+            .and_then(|s| locale.resolve(&s.display_name_key))
+            .map(str::to_owned)
+    };
+    // Tier index parsed from the standing record name —
+    // `ReputationStanding_FactionRep_Rank2` → 2.
+    let rank_index = |g: &Option<sc_holotable::asset::Guid>| {
+        g.as_ref()
+            .and_then(|g| missions.rep_standings.get(g))
+            .and_then(|s| s.record_name.rsplit("Rank").next()?.parse::<i32>().ok())
+    };
+    m.prerequisites
+        .iter()
+        .filter_map(|p| match p {
+            PrereqView::Reputation {
+                faction,
+                min_standing,
+                max_standing,
+                exclude,
+                ..
+            } => Some(RepRequirementView {
+                faction: faction
+                    .as_ref()
+                    .and_then(|g| missions.factions.get(g))
+                    .and_then(|f| locale.resolve(&f.display_name_key))
+                    .map(str::to_owned),
+                min_rank: standing(min_standing),
+                max_rank: standing(max_standing),
+                min_rank_index: rank_index(min_standing),
+                max_rank_index: rank_index(max_standing),
+                exclude: *exclude,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Resolve the chain gate — prerequisite missions, deduped by title.
+fn build_chain(m: &Mission, missions: &Missions, locale: &LocaleMap) -> Vec<MissionRef> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for id in missions.prerequisite_missions(m) {
+        let Some(grantor) = missions.get(id) else {
+            continue;
+        };
+        let title = missions.title_text(grantor, locale);
+        let dedupe_key = title.clone().unwrap_or_else(|| guid_string(&grantor.id));
+        if seen.insert(dedupe_key) {
+            out.push(MissionRef {
+                mission_id: guid_string(&grantor.id),
+                title,
+                once_only: grantor.availability.once_only,
+            });
         }
     }
-    out.push_str(rest);
     out
 }
 
-/// One-line encounter banner — `"2-4 ships · VeryEasy"`. `None` when the
-/// mission has no ship/entity encounters and no combat class.
-fn encounter_summary(m: &Mission) -> Option<String> {
-    let (min, max) = m.ship_count_range();
-    let class = m.combat_class();
-    if max == 0 && class.is_none() {
-        return None;
+/// Builds the per-locality "available in" cards across all pooled members. Each
+/// `MissionLocality` the mission is offered at becomes one [`RegionView`] (a
+/// parent card — *Stanton — Hurston*, *Pyro — Region A*), carrying its places
+/// with their typed `LocationKind`. Localities are deduped across members.
+fn build_locations(members: &[&Mission], missions: &Missions, locale: &LocaleMap) -> Vec<RegionView> {
+    let mut seen_loc: HashSet<sc_holotable::asset::Guid> = HashSet::new();
+    let mut out: Vec<RegionView> = Vec::new();
+    for m in members {
+        for guid in &m.mission_span {
+            if !seen_loc.insert(*guid) {
+                continue;
+            }
+            let Some(view) = missions.localities.get(guid) else {
+                continue;
+            };
+            let system = view
+                .systems
+                .iter()
+                .next()
+                .map(|s| s.display().to_string())
+                .unwrap_or_default();
+            // Dedupe places by record name within the locality.
+            let mut seen_place: HashSet<String> = HashSet::new();
+            let mut places = Vec::new();
+            for loc in &view.locations {
+                if !seen_place.insert(loc.record_name.clone()) {
+                    continue;
+                }
+                places.push(PlaceView {
+                    name: loc.display_name(locale).map(str::to_owned),
+                    record_name: loc.record_name.clone(),
+                    kind: loc.kind.as_ref().map(|k| k.as_dcb_str().to_string()),
+                });
+            }
+            // Prefer the planet's name when the locality wraps a single
+            // planet — Stanton localities are record-named `Stanton1`..`Stanton4`
+            // but a player knows them as Hurston / Crusader / ArcCorp /
+            // microTech. Keep the cleaned region name for multi-planet
+            // localities (Pyro `RegionA` spans several planets).
+            let planets: Vec<&str> = places
+                .iter()
+                .filter(|p| p.kind.as_deref() == Some("Planet"))
+                .filter_map(|p| p.name.as_deref())
+                .collect();
+            let name = if planets.len() == 1 {
+                planets[0].to_string()
+            } else {
+                clean_locality_name(&view.name)
+            };
+            out.push(RegionView {
+                system,
+                name,
+                places,
+            });
+        }
     }
-    let mut parts = Vec::new();
-    if max > 0 {
-        let count = if min == max {
-            max.to_string()
-        } else {
-            format!("{min}-{max}")
-        };
-        let noun = if max == 1 { "ship" } else { "ships" };
-        parts.push(format!("{count} {noun}"));
+    out.sort_by(|a, b| a.system.cmp(&b.system).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// Insert spaces at lower→upper / lower→digit boundaries so a locality record
+/// stem reads as a label (`"RegionA"` → `"Region A"`).
+fn clean_locality_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_lower = false;
+    for ch in s.chars() {
+        if prev_lower && (ch.is_uppercase() || ch.is_ascii_digit()) {
+            out.push(' ');
+        }
+        out.push(ch);
+        prev_lower = ch.is_lowercase();
     }
-    if let Some(c) = class {
-        parts.push(c.to_string());
+    out
+}
+
+/// Structured ship encounters — waves → slots (ship candidates + counts +
+/// factions) + resolved cargo. NPC / entity encounters are skipped for now.
+fn build_encounters(
+    m: &Mission,
+    missions: &Missions,
+    items: &Items,
+    locale: &LocaleMap,
+) -> Vec<EncounterView> {
+    let tree = &missions.tag_tree;
+    let difficulty = m.combat_class().map(str::to_owned);
+    let mut out = Vec::new();
+    for enc in &m.encounters {
+        let Encounter::Ships(s) = enc else { continue };
+        let mut waves = Vec::new();
+        for phase in &s.phases {
+            let mut ships = Vec::new();
+            let mut cargo: BTreeSet<String> = BTreeSet::new();
+            for group in &phase.groups {
+                let mut ship_names: BTreeSet<String> = BTreeSet::new();
+                let mut factions: BTreeSet<String> = BTreeSet::new();
+                for opt in &group.options {
+                    for c in &opt.candidates {
+                        if let Some(name) =
+                            missions.ships.display_name(&c.entity_guid, items, locale)
+                        {
+                            ship_names.insert(name.to_string());
+                        }
+                    }
+                    for f in opt.positive.factions(tree) {
+                        factions.insert(f.to_string());
+                    }
+                    for cg in opt.positive.cargo(tree) {
+                        cargo.insert(cg.to_string());
+                    }
+                }
+                ships.push(ShipSlotView {
+                    count_min: group.concurrent_range.0,
+                    count_max: group.concurrent_range.1,
+                    ships: ship_names.into_iter().collect(),
+                    factions: factions.into_iter().collect(),
+                });
+            }
+            waves.push(WaveView {
+                name: phase.name.clone(),
+                ships,
+                cargo: cargo.into_iter().collect(),
+            });
+        }
+        if !waves.is_empty() {
+            out.push(EncounterView {
+                label: s.variable_name.clone(),
+                difficulty: difficulty.clone(),
+                waves,
+            });
+        }
     }
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    out
 }
 
 /// Fill `Ingredient.name` for each ingredient by resolving its source's

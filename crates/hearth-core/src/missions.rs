@@ -54,7 +54,7 @@ pub fn missions_by_blueprint(missions: &[MissionView]) -> HashMap<String, Vec<Mi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BpPoolReward, BpRewardEntry, MissionView};
+    use crate::types::{BpPoolReward, BpRewardEntry, MissionView, PayoutView};
 
     /// Build a `MissionView` carrying only the fields the inversion reads;
     /// `pools` is a list of pools, each a list of blueprint guids.
@@ -64,12 +64,20 @@ mod tests {
             title: Some(title.into()),
             debug_name: id.into(),
             description: None,
+            category: None,
+            faction: None,
+            difficulty: None,
+            payout: PayoutView {
+                calculated: false,
+                fixed: None,
+                estimate: None,
+                buy_in: 0,
+                time_to_complete: 0.0,
+            },
             once_only,
             shareable: false,
             illegal: false,
             cooldown_seconds: None,
-            uec_fixed: None,
-            uec_calculated: false,
             scrip: vec![],
             reputation: vec![],
             item_rewards: vec![],
@@ -88,8 +96,11 @@ mod tests {
                         .collect(),
                 })
                 .collect(),
-            regions: vec![],
-            encounter_summary: None,
+            rep_required: vec![],
+            chain_required: vec![],
+            locations: vec![],
+            encounters: vec![],
+            placeholders: vec![],
             instance_count: 1,
         }
     }

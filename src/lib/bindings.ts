@@ -413,7 +413,8 @@ live_inventory_enabled: boolean;
  */
 live_sync_consented: boolean; 
 /**
- * Live Game.log sensing (auto-mark BPs received during play). Default on.
+ * Game-log tracking (startup catch-up + auto-mark BPs received during
+ * play). Default off — the user opts in.
  */
 sensor_enabled: boolean; 
 /**
@@ -533,6 +534,40 @@ family_base_name: string | null;
  * crafted item has no recoverable ingredient list.
  */
 recipe: Recipe | null }
+/**
+ * The four authored difficulty axes, each a `1..=8` level (`0` = unparsed).
+ * Hidden from players; surfaced for tooltip / sort, and the payout's driver.
+ */
+export type DifficultyView = { mechanical_skill: number; mental_load: number; risk_of_loss: number; game_knowledge: number }
+/**
+ * One encounter the mission spawns — its difficulty class and waves.
+ */
+export type EncounterView = { 
+/**
+ * The encounter's mission-variable name (`"AmbushTarget"` / `"Wave"` / …).
+ */
+label: string; 
+/**
+ * Combat-class difficulty tag (`"VeryEasy"` … `"Hard"`), when uniform
+ * across the encounter. `None` otherwise.
+ */
+difficulty: string | null; 
+/**
+ * Ordered waves/phases.
+ */
+waves: WaveView[] }
+/**
+ * Resolved reputation faction — stable GUID key + display name.
+ */
+export type FactionView = { 
+/**
+ * `FactionReputation` GUID hex — stable grouping/filter key.
+ */
+guid: string; 
+/**
+ * Display name (`"Ling Family Hauling"`). `None` if it didn't resolve.
+ */
+name: string | null }
 /**
  * One ingredient in a [`Recipe`] — either a bulk resource or a discrete
  * item, discriminated by [`Ingredient::kind`].
@@ -759,6 +794,18 @@ export type LoadTier =
  */
 "raw"
 /**
+ * Resolved mission category — name + optional icon hints.
+ */
+export type MissionCategoryView = { 
+/**
+ * Display name (`"Hauling"`). `None` if the locale didn't resolve.
+ */
+name: string | null; 
+/**
+ * `MissionType.IconName` — UI icon id, empty string when none.
+ */
+icon: string }
+/**
  * A reference to a mission that grants a blueprint — the lean shape the
  * wishlist's ⚐ fulfilment slot needs to answer "which missions grant this
  * BP?". Derived (not stored) by inverting the cooked [`MissionView`] list;
@@ -814,38 +861,68 @@ debug_name: string;
  */
 description: string | null; 
 /**
+ * Mission category (SCMDB's "Mission Type" — Bounty Hunter / Hauling /
+ * Mercenary / Salvage / …), resolved from the template's display info.
+ * `None` when the mission has no category.
+ */
+category: MissionCategoryView | null; 
+/**
+ * Reputation faction (SCMDB's "Faction") — the giving / gaining faction
+ * the UI groups + filters by. `None` when the mission touches no faction.
+ */
+faction: FactionView | null; 
+/**
+ * Difficulty profile (the four 1–8 axes). Players don't see this in-game;
+ * it drives the computed payout. `None` when no difficulty is authored.
+ */
+difficulty: DifficultyView | null; 
+/**
+ * aUEC payout — fixed amount, evergr3n-estimate, or engine-calculated,
+ * plus the buy-in and time budget. See [`PayoutView`].
+ */
+payout: PayoutView; 
+/**
  * `availability.once_only` — non-repeatable.
  */
 once_only: boolean; shareable: boolean; illegal: boolean; 
 /**
  * Post-completion personal cooldown in seconds, if any.
  */
-cooldown_seconds: number | null; 
-/**
- * Fixed aUEC payout, when the contract pays a fixed amount.
- */
-uec_fixed: number | null; 
-/**
- * True when the aUEC payout is engine-computed at runtime (amount unknown).
- */
-uec_calculated: boolean; scrip: ScripRewardView[]; reputation: RepRewardView[]; item_rewards: ItemRewardView[]; 
+cooldown_seconds: number | null; scrip: ScripRewardView[]; reputation: RepRewardView[]; item_rewards: ItemRewardView[]; 
 /**
  * Blueprint-pool rewards — each a weighted pool the contract draws from
  * (union across the pooled contracts, deduped by pool).
  */
 blueprint_rewards: BpPoolReward[]; 
 /**
- * Distinct region labels (`"Pyro: Bloom"`) across the pooled contracts'
- * localities — where the mission is offered.
+ * Reputation a player must hold to accept (faction + standing-tier range).
+ * Empty when ungated.
  */
-regions: string[]; 
+rep_required: RepRequirementView[]; 
 /**
- * One-line encounter banner (`"2-4 ships · VeryEasy"`), or `None` when
- * the mission has no ship/entity encounters.
+ * Missions that must be completed first to unlock this one (the chain
+ * gate), resolved from completion-tag prerequisites. Empty when ungated.
  */
-encounter_summary: string | null; 
+chain_required: MissionRef[]; 
 /**
- * How many spawned contracts this template pools (offered-at-N count).
+ * Where the mission is offered — grouped by star system, each place
+ * carrying its typed kind (station / planet / outpost / …). The UI's
+ * system sub-split + position-type axis come from this.
+ */
+locations: RegionView[]; 
+/**
+ * Structured encounters — ships (with counts + resolved cargo) and the
+ * difficulty class. Empty when the mission has no ship/entity encounter.
+ */
+encounters: EncounterView[]; 
+/**
+ * `~mission(Var)` runtime-substitution variable names present in the
+ * title / description (e.g. `["Location", "CargoGradeToken"]`). The UI
+ * can cross-reference them against `locations` / `encounters`.
+ */
+placeholders: string[]; 
+/**
+ * How many raw contract expansions this entry collapses (offered-at-N).
  */
 instance_count: number }
 /**
@@ -865,6 +942,55 @@ blueprint_guid: string; platform: Platform;
  * FK to `accounts.id`.
  */
 account_id: RecordId; owned_at: string }
+/**
+ * aUEC payout, the visible reward axis the UI groups/sorts by.
+ * 
+ * The static DCB rarely stores a number for generated contracts — the engine
+ * computes it from the difficulty profile (the community "evergr3n" formula
+ * SCMDB uses). Until that estimator lands, `estimate` is `None` and the UI
+ * shows "calculated". A `fixed` amount wins when the contract hardcodes one.
+ */
+export type PayoutView = { 
+/**
+ * True when the reward is engine-calculated (`ContractResult_CalculatedReward`).
+ */
+calculated: boolean; 
+/**
+ * A hardcoded fixed aUEC amount, when the contract carries one.
+ */
+fixed: number | null; 
+/**
+ * Estimated aUEC: `round₂₅₀(1232 · 1.354^weighted_difficulty · minutes)`,
+ * the exponential-in-difficulty payout curve. `None` for fixed/absent
+ * payouts or when difficulty inputs are missing.
+ */
+estimate: number | null; 
+/**
+ * Upfront cost to accept (`contractBuyInAmount`), 0 when free.
+ */
+buy_in: number; 
+/**
+ * Time budget in minutes (`timeToComplete`), 0 when none.
+ */
+time_to_complete: number }
+/**
+ * One accept-location — a resolved place + its typed kind.
+ */
+export type PlaceView = { 
+/**
+ * Display name (`"Bloom"`, `"microTech"`). `None` if it didn't resolve;
+ * the UI falls back to [`Self::record_name`].
+ */
+name: string | null; 
+/**
+ * Stable record-name stem (`"Pyro3"`), always present.
+ */
+record_name: string; 
+/**
+ * Typed `LocationKind` as a string (`"Planet"`, `"Station"`, `"Outpost"`,
+ * …) — the in-game position type. `None` when unresolved.
+ */
+kind: string | null }
 /**
  * Which SC services environment a piece of personal state belongs to.
  * 
@@ -914,6 +1040,56 @@ ingredients: Ingredient[] }
  */
 export type RecordId = string
 /**
+ * One locality's worth of accept-locations — the parent "available in" card
+ * (e.g. *Stanton — Hurston*, *Pyro — Region A*), expandable to its places.
+ */
+export type RegionView = { 
+/**
+ * System display name (`"Stanton"`, `"Pyro"`, `"Nyx"`).
+ */
+system: string; 
+/**
+ * Locality name (`"Hurston"`, `"Region A"`) — the parent grouping a
+ * mission is offered in. Empty when the locality has no name.
+ */
+name: string; 
+/**
+ * The places within this locality the mission is offered at.
+ */
+places: PlaceView[] }
+/**
+ * One reputation-acceptance requirement — a faction and the standing-tier
+ * window the player must sit in.
+ */
+export type RepRequirementView = { 
+/**
+ * Faction display name. `None` if it didn't resolve.
+ */
+faction: string | null; 
+/**
+ * Lower standing-tier bound (`"Neutral"`), resolved name. `None` if unbounded.
+ */
+min_rank: string | null; 
+/**
+ * Upper standing-tier bound. `None` if unbounded.
+ */
+max_rank: string | null; 
+/**
+ * Numeric tier index of [`Self::min_rank`] (`0`–`6` on the generic
+ * `FactionRep` scale), for ordering / range filters. `None` if unbounded
+ * or unparsed. (Groundwork for the sc-dossier "missions I can accept"
+ * filter, which will compare against the player's live standing.)
+ */
+min_rank_index: number | null; 
+/**
+ * Numeric tier index of [`Self::max_rank`]. `None` if unbounded.
+ */
+max_rank_index: number | null; 
+/**
+ * True for an *exclusion* requirement (must NOT be in this range).
+ */
+exclude: boolean }
+/**
  * A reputation reward on a mission. Faction is a raw GUID for now (name
  * resolution is a follow-up); `amount` is `None` for engine-calculated rep.
  */
@@ -938,6 +1114,38 @@ export type ScripRewardView = {
  * Resolved currency display name; `None` if it didn't resolve.
  */
 name: string | null; amount: number }
+/**
+ * One ship slot — how many of which candidate ships, and their factions.
+ */
+export type ShipSlotView = { 
+/**
+ * Concurrent-spawn count range across the slot's alternatives.
+ */
+count_min: number; count_max: number; 
+/**
+ * Candidate ship display names (the engine picks one per spawn).
+ */
+ships: string[]; 
+/**
+ * Faction descriptors on the slot (deduped).
+ */
+factions: string[] }
+/**
+ * One wave/phase of an encounter.
+ */
+export type WaveView = { 
+/**
+ * Wave name (`"Wave1"` / `"SalvageableShip"` / empty).
+ */
+name: string; 
+/**
+ * Ship slots in this wave.
+ */
+ships: ShipSlotView[]; 
+/**
+ * Resolved cargo descriptors across the wave's slots (deduped).
+ */
+cargo: string[] }
 /**
  * What a wishlist entry expresses. A blueprint↔item is 1:1, but "I want
  * this" is ambiguous between wanting the recipe and wanting a crafted

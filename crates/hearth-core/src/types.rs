@@ -208,30 +208,182 @@ pub struct MissionView {
     /// Resolved description, with `~mission(Var)` → `[Var]`. Real line breaks
     /// (the locale stores them as the literal two-char `\n`).
     pub description: Option<String>,
+    /// Mission category (SCMDB's "Mission Type" — Bounty Hunter / Hauling /
+    /// Mercenary / Salvage / …), resolved from the template's display info.
+    /// `None` when the mission has no category.
+    pub category: Option<MissionCategoryView>,
+    /// Reputation faction (SCMDB's "Faction") — the giving / gaining faction
+    /// the UI groups + filters by. `None` when the mission touches no faction.
+    pub faction: Option<FactionView>,
+    /// Difficulty profile (the four 1–8 axes). Players don't see this in-game;
+    /// it drives the computed payout. `None` when no difficulty is authored.
+    pub difficulty: Option<DifficultyView>,
+    /// aUEC payout — fixed amount, evergr3n-estimate, or engine-calculated,
+    /// plus the buy-in and time budget. See [`PayoutView`].
+    pub payout: PayoutView,
     /// `availability.once_only` — non-repeatable.
     pub once_only: bool,
     pub shareable: bool,
     pub illegal: bool,
     /// Post-completion personal cooldown in seconds, if any.
     pub cooldown_seconds: Option<f32>,
-    /// Fixed aUEC payout, when the contract pays a fixed amount.
-    pub uec_fixed: Option<i32>,
-    /// True when the aUEC payout is engine-computed at runtime (amount unknown).
-    pub uec_calculated: bool,
     pub scrip: Vec<ScripRewardView>,
     pub reputation: Vec<RepRewardView>,
     pub item_rewards: Vec<ItemRewardView>,
     /// Blueprint-pool rewards — each a weighted pool the contract draws from
     /// (union across the pooled contracts, deduped by pool).
     pub blueprint_rewards: Vec<BpPoolReward>,
-    /// Distinct region labels (`"Pyro: Bloom"`) across the pooled contracts'
-    /// localities — where the mission is offered.
-    pub regions: Vec<String>,
-    /// One-line encounter banner (`"2-4 ships · VeryEasy"`), or `None` when
-    /// the mission has no ship/entity encounters.
-    pub encounter_summary: Option<String>,
-    /// How many spawned contracts this template pools (offered-at-N count).
+    /// Reputation a player must hold to accept (faction + standing-tier range).
+    /// Empty when ungated.
+    pub rep_required: Vec<RepRequirementView>,
+    /// Missions that must be completed first to unlock this one (the chain
+    /// gate), resolved from completion-tag prerequisites. Empty when ungated.
+    pub chain_required: Vec<MissionRef>,
+    /// Where the mission is offered — grouped by star system, each place
+    /// carrying its typed kind (station / planet / outpost / …). The UI's
+    /// system sub-split + position-type axis come from this.
+    pub locations: Vec<RegionView>,
+    /// Structured encounters — ships (with counts + resolved cargo) and the
+    /// difficulty class. Empty when the mission has no ship/entity encounter.
+    pub encounters: Vec<EncounterView>,
+    /// `~mission(Var)` runtime-substitution variable names present in the
+    /// title / description (e.g. `["Location", "CargoGradeToken"]`). The UI
+    /// can cross-reference them against `locations` / `encounters`.
+    pub placeholders: Vec<String>,
+    /// How many raw contract expansions this entry collapses (offered-at-N).
     pub instance_count: u32,
+}
+
+/// Resolved mission category — name + optional icon hints.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct MissionCategoryView {
+    /// Display name (`"Hauling"`). `None` if the locale didn't resolve.
+    pub name: Option<String>,
+    /// `MissionType.IconName` — UI icon id, empty string when none.
+    pub icon: String,
+}
+
+/// Resolved reputation faction — stable GUID key + display name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct FactionView {
+    /// `FactionReputation` GUID hex — stable grouping/filter key.
+    pub guid: String,
+    /// Display name (`"Ling Family Hauling"`). `None` if it didn't resolve.
+    pub name: Option<String>,
+}
+
+/// The four authored difficulty axes, each a `1..=8` level (`0` = unparsed).
+/// Hidden from players; surfaced for tooltip / sort, and the payout's driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DifficultyView {
+    pub mechanical_skill: u8,
+    pub mental_load: u8,
+    pub risk_of_loss: u8,
+    pub game_knowledge: u8,
+}
+
+/// aUEC payout, the visible reward axis the UI groups/sorts by.
+///
+/// The static DCB rarely stores a number for generated contracts — the engine
+/// computes it from the difficulty profile (the community "evergr3n" formula
+/// SCMDB uses). Until that estimator lands, `estimate` is `None` and the UI
+/// shows "calculated". A `fixed` amount wins when the contract hardcodes one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct PayoutView {
+    /// True when the reward is engine-calculated (`ContractResult_CalculatedReward`).
+    pub calculated: bool,
+    /// A hardcoded fixed aUEC amount, when the contract carries one.
+    pub fixed: Option<i32>,
+    /// Estimated aUEC: `round₂₅₀(1232 · 1.354^weighted_difficulty · minutes)`,
+    /// the exponential-in-difficulty payout curve. `None` for fixed/absent
+    /// payouts or when difficulty inputs are missing.
+    pub estimate: Option<i32>,
+    /// Upfront cost to accept (`contractBuyInAmount`), 0 when free.
+    pub buy_in: i32,
+    /// Time budget in minutes (`timeToComplete`), 0 when none.
+    pub time_to_complete: f32,
+}
+
+/// One reputation-acceptance requirement — a faction and the standing-tier
+/// window the player must sit in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct RepRequirementView {
+    /// Faction display name. `None` if it didn't resolve.
+    pub faction: Option<String>,
+    /// Lower standing-tier bound (`"Neutral"`), resolved name. `None` if unbounded.
+    pub min_rank: Option<String>,
+    /// Upper standing-tier bound. `None` if unbounded.
+    pub max_rank: Option<String>,
+    /// Numeric tier index of [`Self::min_rank`] (`0`–`6` on the generic
+    /// `FactionRep` scale), for ordering / range filters. `None` if unbounded
+    /// or unparsed. (Groundwork for the sc-dossier "missions I can accept"
+    /// filter, which will compare against the player's live standing.)
+    pub min_rank_index: Option<i32>,
+    /// Numeric tier index of [`Self::max_rank`]. `None` if unbounded.
+    pub max_rank_index: Option<i32>,
+    /// True for an *exclusion* requirement (must NOT be in this range).
+    pub exclude: bool,
+}
+
+/// One locality's worth of accept-locations — the parent "available in" card
+/// (e.g. *Stanton — Hurston*, *Pyro — Region A*), expandable to its places.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct RegionView {
+    /// System display name (`"Stanton"`, `"Pyro"`, `"Nyx"`).
+    pub system: String,
+    /// Locality name (`"Hurston"`, `"Region A"`) — the parent grouping a
+    /// mission is offered in. Empty when the locality has no name.
+    pub name: String,
+    /// The places within this locality the mission is offered at.
+    pub places: Vec<PlaceView>,
+}
+
+/// One accept-location — a resolved place + its typed kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PlaceView {
+    /// Display name (`"Bloom"`, `"microTech"`). `None` if it didn't resolve;
+    /// the UI falls back to [`Self::record_name`].
+    pub name: Option<String>,
+    /// Stable record-name stem (`"Pyro3"`), always present.
+    pub record_name: String,
+    /// Typed `LocationKind` as a string (`"Planet"`, `"Station"`, `"Outpost"`,
+    /// …) — the in-game position type. `None` when unresolved.
+    pub kind: Option<String>,
+}
+
+/// One encounter the mission spawns — its difficulty class and waves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct EncounterView {
+    /// The encounter's mission-variable name (`"AmbushTarget"` / `"Wave"` / …).
+    pub label: String,
+    /// Combat-class difficulty tag (`"VeryEasy"` … `"Hard"`), when uniform
+    /// across the encounter. `None` otherwise.
+    pub difficulty: Option<String>,
+    /// Ordered waves/phases.
+    pub waves: Vec<WaveView>,
+}
+
+/// One wave/phase of an encounter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct WaveView {
+    /// Wave name (`"Wave1"` / `"SalvageableShip"` / empty).
+    pub name: String,
+    /// Ship slots in this wave.
+    pub ships: Vec<ShipSlotView>,
+    /// Resolved cargo descriptors across the wave's slots (deduped).
+    pub cargo: Vec<String>,
+}
+
+/// One ship slot — how many of which candidate ships, and their factions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ShipSlotView {
+    /// Concurrent-spawn count range across the slot's alternatives.
+    pub count_min: i32,
+    pub count_max: i32,
+    /// Candidate ship display names (the engine picks one per spawn).
+    pub ships: Vec<String>,
+    /// Faction descriptors on the slot (deduped).
+    pub factions: Vec<String>,
 }
 
 /// A typed-currency (scrip) reward on a mission.

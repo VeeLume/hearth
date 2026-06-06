@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Missions, rebuilt.** The Missions tab is now a full mission browser rather
+  than a flat list. Each mission shows its **type and faction**, an **aUEC
+  payout estimate**, **required reputation** and **prerequisite chain** (with
+  clickable jump links), **where it's offered** (expandable locality cards
+  grouped by place kind — planets, moons, stations, lagrange points, asteroid
+  clusters), and its **combat encounters** (collapsible ship pools with cargo).
+  The blueprint rewards — the collection target — lead each row with an
+  owned/total count.
+
+- **Readable mission titles.** The game's `~mission(...)` placeholders are now
+  filled in — a hauling contract reads "Master Rank - Direct Bulk Cargo Haul",
+  a defend mission reads "…in and out of \[Stanton · Space]". Values the
+  contract pins show plainly; values the game finalizes per spawn (a location
+  scope, a one-of-several choice) show in `[brackets]` so it's clear they're
+  best-effort, not a promise.
+
+- **Sort, search, and page the board.** Sort by **title** or by **aUEC payout**
+  (either direction), and the list now reveals rows in pages ("Show more")
+  instead of stopping at a fixed cap. New **star-system** and
+  **required-reputation range** filters join the existing ones in a Filters
+  popover.
+
+- **Mission families.** Same-title variants (e.g. a dozen "Master Rank" hauling
+  runs across systems) collapse into one **family** row showing the combined
+  blueprint-collection progress, the payout range, and the systems they cover.
+  Expand it to see the variants, with the ones that still grant blueprints you
+  don't own listed first. Toggle grouping off for the flat list.
+
+### Known limitations
+
+- Some title placeholders stay bracketed: NPC / ship **names** (the engine
+  generates those at spawn) and a few recursive sub-template titles. Location
+  placeholders resolve to a **system · setting** scope, not the exact spawn
+  place — the concrete location isn't in the static data.
+- The aUEC estimate is within ~0.04% across the validated range but drifts
+  slightly on the highest-difficulty contracts; a fine-tune is planned.
+- Event / seasonal missions (e.g. XenoThreat) can show stale figures and aren't
+  filtered out yet.
+
 ## [0.2.0] - 2026-06-04
 
 ### Added
