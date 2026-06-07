@@ -111,6 +111,7 @@
   {#snippet subtitle()}
     {#if loading}Loading…{:else}{materialCount} material{materialCount === 1 ? "" : "s"}{#if itemCount} · {itemCount} crafting item{itemCount === 1 ? "" : "s"}{/if}{/if}
   {/snippet}
+  <a class="craft-link" href="/crafting">What can I craft →</a>
 </PageHeader>
 
 {#if loading}
@@ -199,6 +200,17 @@
 {/snippet}
 
 <style>
+  /* Header cross-link to the crafting planner (right-aligned in PageHeader). */
+  .craft-link {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: var(--ember);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .craft-link:hover {
+    text-decoration: underline;
+  }
   .res {
     flex: 1;
     overflow-y: auto;

@@ -18,7 +18,7 @@
 //! on a background task so the OnceCells are warm by the time the WebView
 //! mounts and starts firing onMount IPC calls.
 
-use hearth_core::{Account, BpView, MissionView};
+use hearth_core::{Account, BpView, CraftDetail, MissionView};
 use hearth_storage::{DbPool, Scope};
 use tokio::sync::OnceCell;
 
@@ -99,6 +99,13 @@ impl AppState {
     /// The cooked mission browser data (projection of [`Self::data`]).
     pub(crate) async fn missions(&self) -> Result<&Vec<MissionView>, AppError> {
         Ok(&self.data().await?.missions)
+    }
+
+    /// A single blueprint's rich crafting view (slots + per-slot modifier
+    /// curves), looked up from the cooked `craft_details` map. `None` when the
+    /// blueprint has no recipe / isn't in the catalog.
+    pub(crate) async fn craft_detail(&self, guid: &str) -> Result<Option<&CraftDetail>, AppError> {
+        Ok(self.data().await?.craft_details.get(guid))
     }
 
     /// `class_crc → resource name` map (projection of [`Self::data`]). Resolves

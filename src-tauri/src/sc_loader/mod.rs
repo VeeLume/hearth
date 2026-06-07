@@ -84,6 +84,11 @@ pub const LOADER_STACK_SIZE: usize = 32 * 1024 * 1024;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CookedData {
     pub blueprints: Vec<hearth_core::BpView>,
+    /// `blueprint_record_guid → rich per-slot crafting view` (named slots +
+    /// per-slot gameplay-property modifier curves). Powers the `/crafting`
+    /// calculator; fetched on demand per blueprint (`get_craft_detail`) so the
+    /// catalog payload stays lean.
+    pub craft_details: std::collections::HashMap<String, hearth_core::CraftDetail>,
     pub missions: Vec<hearth_core::MissionView>,
     /// `class_crc(ResourceType.guid) → display name`. The lookup that resolves
     /// a live-inventory `resource_id` (sc-dossier's wire CRC) to a readable

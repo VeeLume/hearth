@@ -71,6 +71,19 @@ export function formatIngredientQty(ing: Ingredient): {
   return { amount: formatScu(ing.quantity_scu), unit: "SCU" };
 }
 
+/** Deep-link to the Missions view, pre-filtered to the missions that grant any
+ *  of this craftable's interchangeable BPs (`?bp=guid,guid…`); `name` labels the
+ *  banner there. Passing every interchangeable BP guid matches whichever record
+ *  a mission pool happens to reference. The Missions page reads these params
+ *  (`bpFilter` / `bpFilterName`). */
+export function missionsLink(c: Craftable): string {
+  const params = new URLSearchParams({
+    bp: c.bpGuids.join(","),
+    name: nameOf(c.rep),
+  });
+  return `/missions?${params}`;
+}
+
 /** Fold BPs that craft the same entity into one Craftable. */
 export function collapseCraftables(items: BpView[]): Craftable[] {
   const byEntity = new Map<string, BpView[]>();

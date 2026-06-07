@@ -55,7 +55,7 @@ export function stackLocationLabel(s: InventoryStack): string {
   }
 }
 
-function coverageForIngredient(
+export function coverageForIngredient(
   ing: Ingredient,
   byCrc: Map<number, InventoryStack[]>,
 ): IngredientCoverage {

@@ -10,12 +10,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use hearth_core::sc_data::guid_string;
 use hearth_core::{
-    BpPoolReward, BpRewardEntry, BpView, DifficultyView, EncounterView, FactionView,
+    BpPoolReward, BpRewardEntry, BpView, CraftDetail, DifficultyView, EncounterView, FactionView,
     ItemRewardView, MissionCategoryView, MissionRef, MissionView, PayoutView, PlaceView, RegionView,
     RepRequirementView, RepRewardView, ScripRewardView, ShipSlotView, WaveView,
 };
 use sc_holotable::asset::{Datacore, LocaleKey, LocaleMap, RecordPaths, class_crc};
-use sc_holotable::crafting::{Blueprints, Categories, Process};
+use sc_holotable::crafting::{Blueprints, Categories, GameplayProperties, GlobalParams, Process};
 use sc_holotable::items::{ItemCatalog, Items};
 // NB: `sc_holotable::locations::Locations` (the typed universe index) is named
 // `Locations` and so is `sc_missions::Locations`; we only use the former here.
@@ -29,8 +29,10 @@ use super::CookedData;
 /// indices (cheap relative to the DCB parse this shares), so they stay
 /// self-contained.
 pub(super) fn build_cooked(datacore: &Datacore, locale: &LocaleMap) -> CookedData {
+    let (blueprints, craft_details) = build_blueprints(datacore, locale);
     CookedData {
-        blueprints: build_blueprints(datacore, locale),
+        blueprints,
+        craft_details,
         missions: build_missions(datacore, locale),
         resource_names: build_resource_names(datacore, locale),
         location_names: build_location_names(datacore, locale),
@@ -68,7 +70,10 @@ fn build_location_names(datacore: &Datacore, locale: &LocaleMap) -> HashMap<u32,
     out
 }
 
-fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
+fn build_blueprints(
+    datacore: &Datacore,
+    locale: &LocaleMap,
+) -> (Vec<BpView>, HashMap<String, CraftDetail>) {
     // Index passes over the same datacore:
     //   - Items        — entity name keys + typed Type/SubType
     //   - Blueprints   — the full crafting catalog (Blueprint + tier-0 Recipe)
@@ -94,8 +99,17 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
     // "Geist Armor"). Grouping is display-name driven (Items + &LocaleMap);
     // &RecordPaths is used to pick the canonical base member of each model.
     let item_catalog = ItemCatalog::build(&items, &paths, locale);
+    // Crafting-effect surface (v0.13.0): GameplayProperties resolves a
+    // modifier's property GUID → display name / unit / transform; GlobalParams
+    // gives the "Base" reference quality (500 in SC 4.8) the calculator anchors
+    // its presets and curves on.
+    let gpps = GameplayProperties::build(datacore);
+    let default_quality = GlobalParams::build(datacore)
+        .map(|g| g.default_composition_quality)
+        .unwrap_or(500);
 
     let mut out = Vec::new();
+    let mut craft_details = HashMap::new();
     for blueprint in catalog.iter() {
         // Filter to Creation blueprints — the ones that craft a real
         // entity. Dormant non-Creation processes (refining/repair/etc
@@ -162,9 +176,30 @@ fn build_blueprints(datacore: &Datacore, locale: &LocaleMap) -> Vec<BpView> {
         if let Some(recipe) = view.recipe.as_mut() {
             fill_ingredient_names(&mut recipe.ingredients, &resources, &items, locale);
         }
+
+        // Rich per-slot crafting view (slots + modifier curves) for the
+        // crafting calculator. Same name-resolution pass over each slot's
+        // ingredient as the flat recipe above.
+        if let Some(mut detail) = hearth_core::sc_data::craft_detail(
+            blueprint,
+            &gpps,
+            locale,
+            default_quality,
+        ) {
+            for slot in &mut detail.slots {
+                fill_ingredient_names(
+                    std::slice::from_mut(&mut slot.ingredient),
+                    &resources,
+                    &items,
+                    locale,
+                );
+            }
+            craft_details.insert(view.blueprint_record_guid.clone(), detail);
+        }
+
         out.push(view);
     }
-    out
+    (out, craft_details)
 }
 
 /// Build the mission browser data. CIG spawns one contract per offered

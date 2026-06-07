@@ -1,23 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { SvelteSet } from "svelte/reactivity";
+  import { page } from "$app/state";
   import { type BpView, type MissionRef, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
-  import {
-    type Craftable,
-    nameOf,
-    collapseCraftables,
-    formatIngredientQty,
-    formatCraftTime,
-    formatScu,
-  } from "$lib/domain/catalog";
-  import {
-    coverageFor,
-    type RecipeCoverage,
-    type IngredientCoverage,
-  } from "$lib/domain/inventory";
+  import RecipeDetail from "$lib/components/recipe/RecipeDetail.svelte";
+  import { persistentScroll } from "$lib/actions/scroll";
+  import { type Craftable, nameOf, collapseCraftables, missionsLink } from "$lib/domain/catalog";
   import {
     data,
     owned,
@@ -27,60 +17,36 @@
     ensureBlueprints,
     ensureOwnership,
     ensureGrantedBy,
-    ensureInventory,
     toggleWishlist,
   } from "$lib/state/data.svelte";
 
-  // The wishlist is fulfilment-focused: the catalog is where you *find* and
-  // flag things; here you see how to *get* them. Two intents, two questions:
-  //   - Blueprints wanted (⚐) → which missions grant this BP?  (Stage 6)
-  //   - Items wanted (♡)      → own the BP? show the recipe ("you can craft
-  //                             this"). Else: acquire the BP, or a community
-  //                             member crafts it (v2).
-  // ⚐ and the owned-item recipe are live; the unowned-item community-craft
-  // path is still a placeholder.
-
-  // All data comes from the shared store ($lib/data.svelte) so navigation
-  // doesn't re-fetch. `blueprints` / `grantedBy` alias the store; `owned` /
-  // `wishRecipe` / `wishItem` / `wishSet` are the shared reactive sets.
-  // `grantedBy`: blueprint_record_guid → missions that grant it (the ⚐ source).
+  // A short overview of what you've flagged. Two intents, two questions:
+  //   - Blueprints wanted (⚐) → which missions grant this BP?
+  //   - Items wanted (♡)      → own the BP (craft it) or acquire it.
+  // The recipe, materials coverage, and quality calculator live in the shared
+  // recipe detail (open a row); this page stays a lean list.
   const blueprints = $derived(data.blueprints);
   const grantedBy = $derived(data.grantedBy);
-  let loading = $state(
-    !(data.blueprintsReady && data.ownershipReady && data.grantedByReady),
-  );
+  let loading = $state(!(data.blueprintsReady && data.ownershipReady && data.grantedByReady));
   let errorMessage = $state<string | null>(null);
+  // Preserve the wishlist scroll position across the list ↔ detail toggle.
+  const keepScroll = persistentScroll();
 
   onMount(async () => {
-    const [bpErr] = await Promise.all([
-      ensureBlueprints(),
-      ensureOwnership(),
-      ensureGrantedBy(),
-      ensureInventory(),
-    ]);
+    const [bpErr] = await Promise.all([ensureBlueprints(), ensureOwnership(), ensureGrantedBy()]);
     if (bpErr) errorMessage = bpErr;
     loading = false;
   });
 
-  // Want-item resource coverage — "do I have the mats?". Joins each craftable's
-  // recipe against the live inventory (keyed by CRC in the shared store). Only
-  // meaningful once a resource sync has populated the inventory.
-  const hasInventory = $derived(data.inventory.length > 0);
-  function coverage(c: Craftable): RecipeCoverage | null {
-    return coverageFor(c.rep.recipe, data.inventoryByCrc);
-  }
-  /** Short have-mats summary for the row chip. */
-  function coverageSummary(cov: RecipeCoverage): { label: string; ready: boolean } {
-    if (cov.craftable) return { label: "✓ have materials", ready: true };
-    const have = cov.ingredients.filter((i) => i.satisfied).length;
-    return { label: `materials ${have}/${cov.ingredients.length}`, ready: false };
-  }
-  /** Per-ingredient "have vs need" label for the expanded recipe. */
-  function haveLabel(ic: IngredientCoverage): string {
-    if (!ic.tracked) return "untracked";
-    if (ic.ing.kind === "item") return `have ×${ic.haveCount ?? 0}`;
-    return `have ${formatScu(ic.haveScu)} SCU`;
-  }
+  // URL-driven recipe detail (`?bp=`), so back returns here.
+  const selectedBp = $derived(page.url.searchParams.get("bp"));
+  const selectedCraftable = $derived(
+    selectedBp
+      ? (collapseCraftables(blueprints).find(
+          (c) => c.bpGuids.includes(selectedBp) || c.rep.blueprint_record_guid === selectedBp,
+        ) ?? null)
+      : null,
+  );
 
   /** Missions that grant any of a craftable's interchangeable BPs, deduped by
    *  mission and sorted by title — the ⚐ fulfilment answer. */
@@ -93,41 +59,19 @@
         seen.add(m.mission_id);
         out.push(m);
       }
-    out.sort((a, b) =>
-      (a.title ?? a.mission_id).localeCompare(b.title ?? b.mission_id),
-    );
+    out.sort((a, b) => (a.title ?? a.mission_id).localeCompare(b.title ?? b.mission_id));
     return out;
   }
-
-  /** Compact label for the fulfilment chip. */
   function grantLabel(ms: MissionRef[]): string {
     if (ms.length === 1) return `granted by ${ms[0].title ?? ms[0].mission_id}`;
     return `granted by ${ms.length} missions`;
-  }
-
-  /** Deep-link to the Missions view, pre-filtered to the missions granting any
-   *  of this craftable's interchangeable BPs (name labels the banner there). */
-  function missionsLink(c: Craftable): string {
-    const params = new URLSearchParams({
-      bp: c.bpGuids.join(","),
-      name: nameOf(c.rep),
-    });
-    return `/missions?${params}`;
   }
 
   function craftableOwned(c: Craftable): boolean {
     return c.bpGuids.some((g) => owned.has(g));
   }
 
-  // Owned want-item rows can expand to show the recipe ("you can craft this").
-  let expandedRecipes = new SvelteSet<string>();
-  function toggleRecipe(key: string) {
-    if (expandedRecipes.has(key)) expandedRecipes.delete(key);
-    else expandedRecipes.add(key);
-  }
-
-  /** Remove a craftable from one wishlist intent (clears every BP), via the
-   *  shared optimistic store action; surface any error inline. */
+  /** Remove a craftable from one wishlist intent (clears every BP). */
   async function removeWant(c: Craftable, intent: WishIntent) {
     for (const g of c.bpGuids.filter((g) => wishSet(intent).has(g))) {
       const err = await toggleWishlist(g, intent);
@@ -136,7 +80,6 @@
   }
 
   const craftables = $derived(collapseCraftables(blueprints));
-
   const wantedBp = $derived(
     craftables
       .filter((c) => c.bpGuids.some((g) => wishRecipe.has(g)))
@@ -156,7 +99,7 @@
 
 <PageHeader title="Wishlist">
   {#snippet subtitle()}
-    {#if loading}Loading…{:else}{wantedBp.length} blueprint{wantedBp.length === 1 ? "" : "s"} · {wantedItem.length} item{wantedItem.length === 1 ? "" : "s"} wanted{/if}
+    {#if loading}Loading…{:else if selectedCraftable}{nameOf(selectedCraftable.rep)}{:else}{wantedBp.length} blueprint{wantedBp.length === 1 ? "" : "s"} · {wantedItem.length} item{wantedItem.length === 1 ? "" : "s"} wanted{/if}
   {/snippet}
 </PageHeader>
 
@@ -164,8 +107,12 @@
   <Loading />
 {:else if errorMessage}
   <div class="error"><strong>Couldn't load the wishlist.</strong><p>{errorMessage}</p></div>
+{:else if selectedCraftable}
+  <div class="detail-wrap">
+    <RecipeDetail craftable={selectedCraftable} backHref="/wishlist" />
+  </div>
 {:else}
-  <section class="wl">
+  <section class="wl" use:keepScroll>
     <!-- ── Blueprints wanted (⚐) ─────────────────────────────────── -->
     <div class="wl-section">
       <div class="wl-head">
@@ -187,7 +134,7 @@
           {#each wantedBp as c (c.entityKey)}
             {@const ms = grantingMissions(c)}
             <li class="wl-row">
-              <span class="wl-name">{nameOf(c.rep)}</span>
+              <a class="wl-name" href="?bp={c.rep.blueprint_record_guid}">{nameOf(c.rep)}</a>
               <span class="wl-cat">{categoryLabel(c.rep)}</span>
               {#if ms.length > 0}
                 <a
@@ -198,18 +145,11 @@
                   {grantLabel(ms)} →
                 </a>
               {:else}
-                <span
-                  class="fulfil none"
-                  title="No mission in the current SC data grants this blueprint — it may be default-unlocked or acquired another way"
-                >
+                <span class="fulfil none" title="No mission in the current SC data grants this blueprint — it may be default-unlocked or acquired another way">
                   no known mission source
                 </span>
               {/if}
-              <button
-                class="wl-remove"
-                title="Remove from wishlist"
-                onclick={() => removeWant(c, "recipe")}
-              >×</button>
+              <button class="wl-remove" title="Remove from wishlist" onclick={() => removeWant(c, "recipe")}>×</button>
             </li>
           {/each}
         </ul>
@@ -224,8 +164,9 @@
         <span class="wl-count">{wantedItem.length}</span>
       </div>
       <p class="wl-intro">
-        Crafted copies you want in hand. Make them yourself once you own the
-        blueprint, or have a community member craft them for you.
+        Crafted copies you want in hand. Open a row for the recipe, materials
+        coverage, and quality. Make them once you own the blueprint, or have a
+        community member craft them (v2).
       </p>
       {#if wantedItem.length === 0}
         <p class="wl-empty">
@@ -234,69 +175,15 @@
       {:else}
         <ul>
           {#each wantedItem as c (c.entityKey)}
-            {@const isOwned = craftableOwned(c)}
-            {@const showRecipe = isOwned && expandedRecipes.has(c.entityKey)}
-            {@const cov = coverage(c)}
-            {@const csum = cov && hasInventory ? coverageSummary(cov) : null}
-            <li class="wl-row item-row">
-              <div class="wl-main">
-                <span class="wl-name">{nameOf(c.rep)}</span>
-                <span class="wl-cat">{categoryLabel(c.rep)}</span>
-                {#if csum}
-                  <span
-                    class="mats"
-                    class:ready={csum.ready}
-                    title="Whether your synced resource inventory covers this recipe"
-                  >{csum.label}</span>
-                {/if}
-                {#if isOwned}
-                  <button
-                    class="fulfil ready expand"
-                    class:left-auto={!csum}
-                    title="You own the blueprint — craft it in-game. Click to see the recipe."
-                    onclick={() => toggleRecipe(c.entityKey)}
-                  >
-                    ✓ you can craft this
-                    <span class="chev" class:open={showRecipe} aria-hidden="true">▸</span>
-                  </button>
-                {:else}
-                  <span class="fulfil soon" class:left-auto={!csum} title="Acquire the blueprint, or get a community member to craft it (v2)">
-                    needs BP · or community craft · soon
-                  </span>
-                {/if}
-                <button
-                  class="wl-remove"
-                  title="Remove from wishlist"
-                  onclick={() => removeWant(c, "item")}
-                >×</button>
-              </div>
-
-              {#if showRecipe}
-                <div class="wl-recipe">
-                  {#if cov && cov.ingredients.length > 0}
-                    <ul class="wl-ingredients">
-                      {#each cov.ingredients as ic, i (`${ic.ing.guid}|${i}`)}
-                        {@const q = formatIngredientQty(ic.ing)}
-                        <li class:short={hasInventory && ic.tracked && !ic.satisfied}>
-                          <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
-                          <span class="ing-name">{ic.ing.name ?? "Unknown ingredient"}</span>
-                          {#if ic.ing.min_quality > 0}<span class="ing-q" title="Minimum required quality">≥ Q{ic.ing.min_quality}</span>{/if}
-                          {#if hasInventory && ic.tracked}
-                            <span class="ing-have" class:ok={ic.satisfied}>{ic.satisfied ? "✓ " : ""}{haveLabel(ic)}</span>
-                            {#if ic.bestQuality != null}<span class="ing-best" title="Best available quality">best Q{ic.bestQuality}</span>{/if}
-                            {#if ic.locations.length}<span class="ing-where" title="Where it's stored">@ {ic.locations.join(", ")}</span>{/if}
-                          {/if}
-                        </li>
-                      {/each}
-                    </ul>
-                    {#if c.rep.recipe?.craft_time_seconds}
-                      <span class="wl-craft-time" title="Craft time">⏱ {formatCraftTime(c.rep.recipe.craft_time_seconds)}</span>
-                    {/if}
-                  {:else}
-                    <span class="wl-recipe-empty">No recipe data for this item.</span>
-                  {/if}
-                </div>
+            <li class="wl-row">
+              <a class="wl-name" href="?bp={c.rep.blueprint_record_guid}">{nameOf(c.rep)}</a>
+              <span class="wl-cat">{categoryLabel(c.rep)}</span>
+              {#if craftableOwned(c)}
+                <span class="fulfil ready" title="You own the blueprint — craft it in-game">✓ you can craft this</span>
+              {:else}
+                <span class="fulfil soon" title="Acquire the blueprint, or get a community member to craft it (v2)">needs BP · or community craft · soon</span>
               {/if}
+              <button class="wl-remove" title="Remove from wishlist" onclick={() => removeWant(c, "item")}>×</button>
             </li>
           {/each}
         </ul>
@@ -312,6 +199,12 @@
   }
   .error strong {
     color: var(--bad);
+  }
+
+  .detail-wrap {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.2rem 1.6rem 2rem;
   }
 
   .wl {
@@ -380,9 +273,14 @@
   .wl-name {
     flex: 0 1 auto;
     font-size: 0.9rem;
+    color: var(--text);
+    text-decoration: none;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .wl-name:hover {
+    color: var(--ember);
   }
   .wl-cat {
     flex: 0 0 auto;
@@ -391,8 +289,9 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  /* Fulfilment hint — pushed to the right; muted until the real surface ships. */
+  /* Fulfilment chip — pushed to the right. */
   .fulfil {
+    margin-left: auto;
     flex: 0 0 auto;
     font-size: 0.72rem;
     color: var(--muted);
@@ -400,27 +299,6 @@
     border: 1px solid var(--line);
     border-radius: 999px;
     background: var(--panel-2);
-  }
-  /* Whichever of (mats chip, fulfil chip) comes first gets pushed right. */
-  .mats {
-    margin-left: auto;
-  }
-  .fulfil.left-auto {
-    margin-left: auto;
-  }
-  /* Resource-coverage chip — has the mats vs partial. */
-  .mats {
-    flex: 0 0 auto;
-    font-size: 0.72rem;
-    color: var(--muted);
-    padding: 0.1rem 0.5rem;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--panel-2);
-  }
-  .mats.ready {
-    color: var(--good);
-    border-color: var(--good);
   }
   .fulfil.soon {
     opacity: 0.7;
@@ -429,8 +307,7 @@
     color: var(--ember);
     border-color: var(--ember-dim);
   }
-  /* ⚐ fulfilment is live: a real mission source exists — links to the
-     Missions view filtered to those missions. */
+  /* ⚐ fulfilment is live: links to the Missions view filtered to the granters. */
   .fulfil.granted {
     color: var(--ember);
     border-color: var(--ember-dim);
@@ -441,104 +318,9 @@
   .fulfil.granted:hover {
     background: var(--ember-glow);
   }
-  /* No mission grants it (default-unlocked, or acquired some other way). */
   .fulfil.none {
     font-style: italic;
     color: var(--faint);
-  }
-  /* Owned want-item: clickable "you can craft this" chip → reveals the recipe. */
-  button.fulfil {
-    cursor: pointer;
-  }
-  .fulfil.expand {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-  .fulfil.ready:hover {
-    background: var(--ember-glow);
-  }
-  .chev {
-    display: inline-block;
-    font-size: 0.7em;
-    transition: transform 120ms;
-  }
-  .chev.open {
-    transform: rotate(90deg);
-  }
-
-  /* Item row becomes a column so the recipe panel sits below the main line. */
-  .item-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
-  }
-  .item-row .wl-main {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-  }
-  .wl-recipe {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem 1rem;
-    margin-top: 0.4rem;
-    padding: 0.45rem 0.2rem 0.2rem;
-    border-top: 1px dashed var(--line);
-  }
-  .wl-ingredients {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.9rem;
-  }
-  .wl-ingredients li {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    font-size: 0.78rem;
-  }
-  .ing-qty {
-    color: var(--ember);
-    font-variant-numeric: tabular-nums;
-  }
-  .ing-unit {
-    color: var(--faint);
-    font-size: 0.9em;
-  }
-  .ing-name {
-    color: var(--text);
-  }
-  .ing-q {
-    color: var(--faint);
-    font-size: 0.72rem;
-  }
-  /* Coverage annotations on an ingredient: have-amount, best quality, where. */
-  .ing-have {
-    font-size: 0.72rem;
-    color: var(--muted);
-  }
-  .ing-have.ok {
-    color: var(--good);
-  }
-  .ing-best,
-  .ing-where {
-    font-size: 0.7rem;
-    color: var(--faint);
-  }
-  /* An ingredient you're short on — dim the row slightly. */
-  .wl-ingredients li.short .ing-name {
-    color: var(--muted);
-  }
-  .wl-craft-time {
-    font-size: 0.74rem;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .wl-recipe-empty {
-    font-size: 0.78rem;
-    color: var(--faint);
-    font-style: italic;
   }
   .wl-remove {
     flex: 0 0 auto;

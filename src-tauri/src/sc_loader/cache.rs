@@ -33,8 +33,9 @@ use super::CookedData;
 /// invalidate cleanly via `Error::ProcessedSnapshotStale` instead of
 /// deserializing into a silently-wrong shape. (18: CookedData gains
 /// resource_names / location_names CRC→name maps and BpView ingredients gain
-/// a `crc` match key, for the live resource inventory.)
-const HEARTH_CATALOG_COOK_VERSION: u32 = 18;
+/// a `crc` match key, for the live resource inventory. 19: CookedData gains
+/// the `craft_details` map — per-slot crafting views for the calculator.)
+const HEARTH_CATALOG_COOK_VERSION: u32 = 19;
 
 pub(super) const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 pub(super) const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";

@@ -43,7 +43,7 @@ tauri-specta = { version = "2.0.0-rc.21", features = ["typescript"] }
 # are what the loader touches directly; `missions` brings BlueprintPools and
 # `crafting` brings the Blueprint catalog they resolve against. (extract/items
 # are pulled transitively by missions/crafting, but listed for clarity.)
-sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.12.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "locations", "tags"] }
+sc-holotable = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.13.0", features = ["installs", "extract", "items", "missions", "crafting", "resources", "locations", "tags"] }
 
 sc-dossier ={ git = "https://github.com/VeeLume/sc-dossier.git", tag = "v0.2.0"}
 

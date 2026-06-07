@@ -610,6 +610,93 @@ pub struct Ingredient {
     pub min_quality: i32,
 }
 
+/// The rich, per-slot crafting view for one blueprint — the data behind the
+/// `/crafting` recipe calculator. Built from the same
+/// `sc_crafting::Blueprint.tiers[0].recipe` as [`Recipe`], but instead of
+/// flattening the cost tree it preserves the **named material slots**
+/// (`CraftingCost_Select.name_info` → "Frame" / "Cabling" / …) and each
+/// slot's **gameplay-property modifier curves** (how the chosen material's
+/// quality reshapes the crafted item's stats). Fetched on demand per
+/// blueprint (`get_craft_detail`), not embedded in the catalog's [`BpView`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct CraftDetail {
+    /// The blueprint this detail is for (hex GUID — matches
+    /// [`BpView::blueprint_record_guid`]).
+    pub blueprint_record_guid: String,
+    /// Total craft time normalized to seconds. Same value as
+    /// [`Recipe::craft_time_seconds`].
+    pub craft_time_seconds: Option<f32>,
+    /// `CraftingGlobalParams.default_composition_quality` (500 in SC 4.8) —
+    /// the "Base" reference quality the UI's presets and modifier curves
+    /// anchor on. Global, repeated here so a single detail fetch is
+    /// self-contained.
+    pub default_quality: i32,
+    /// One entry per named material slot, in the recipe's declared order.
+    pub slots: Vec<RecipeSlot>,
+}
+
+/// One named material slot in a [`CraftDetail`] — a material plus the
+/// gameplay-property effects its quality drives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct RecipeSlot {
+    /// Resolved slot label ("Frame", "Cabling", "Power Regulator"). `None`
+    /// for unnamed / placeholder slots (`<= PLACEHOLDER =>` in the DCB).
+    pub slot_name: Option<String>,
+    /// The material that fills this slot (resource or item) — same shape the
+    /// catalog uses, with `min_quality` and resolved `name`.
+    pub ingredient: Ingredient,
+    /// Gameplay-property modifier curves attached to this slot. Empty when
+    /// the slot drives no stats. Evaluated client-side against the slider
+    /// quality (see `src/lib/domain/crafting.ts`).
+    pub modifiers: Vec<CraftModifier>,
+}
+
+/// One gameplay property a slot's material quality reshapes, with the curve
+/// to evaluate and the transform to display it. Projection of
+/// `sc_crafting::GameplayPropertyModifier` joined to its
+/// `CraftingGameplayPropertyDef` (display metadata).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct CraftModifier {
+    /// Resolved property display name ("Recoil Smoothness", "Impact Force").
+    /// `None` when the property GUID doesn't resolve. Note CIG's display name
+    /// can differ from the record key.
+    pub property_name: Option<String>,
+    /// Resolved unit-format string (a printf template like `"%.2f RPM"`).
+    /// `None` when empty / `@LOC_EMPTY`.
+    pub unit_format: Option<String>,
+    /// How to present the evaluated factor (percent change / scale / raw).
+    pub transform: ModifierTransform,
+    /// Quality→value bands. Usually one; evaluated by picking the band that
+    /// contains the quality (else the nearest), then linearly interpolating.
+    pub ranges: Vec<ModifierRange>,
+}
+
+/// Flattened `sc_crafting::DisplayTransformation` — how a modifier's raw
+/// factor is shown. Kept as a tagged struct (not a data enum) for clean TS
+/// bindings. `kind` ∈ `scale` | `factor_to_percent` |
+/// `factor_to_negated_percent` | `value_to_factor` | `raw`. `raw` covers
+/// the rare `Sequence` / dormant variants (show the ×factor, no percent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ModifierTransform {
+    pub kind: String,
+    /// Scalar for `kind == "scale"`; `None` otherwise.
+    pub scale_factor: Option<f32>,
+}
+
+/// Flattened `sc_crafting::ValueRange` — one quality→value band, linearly
+/// interpolated and clamped to `[start_quality, end_quality]`. `additive`
+/// distinguishes a multiplicative band (`Linear`, the common case — `×factor`)
+/// from an additive one (`LinearIntegerAdditive` — `+value`). Additive ints
+/// are widened to `f32`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ModifierRange {
+    pub additive: bool,
+    pub start_quality: i32,
+    pub end_quality: i32,
+    pub at_start: f32,
+    pub at_end: f32,
+}
+
 /// Where an inventory stack physically sits, classified from sc-dossier's
 /// `Context`. `Location` / `Hangar` carry a resolved place name in
 /// [`InventoryStack::location_name`]; `Container` carries the owning ship/box

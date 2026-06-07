@@ -21,6 +21,7 @@ import {
   onInventoryChanged,
   type UnlistenFn,
   type BpView,
+  type CraftDetail,
   type MissionView,
   type MissionRef,
   type WishIntent,
@@ -165,6 +166,33 @@ export function ensureInventory(): Promise<string | null> {
     })();
   }
   return invPromise;
+}
+
+// Per-blueprint rich crafting detail (slots + modifier curves), fetched on
+// demand and cached for the session. Shared by the catalog detail route, the
+// crafting planner, and the wishlist so a recipe is fetched at most once.
+const _craftDetailCache = new Map<string, CraftDetail | null>();
+const _craftDetailInflight = new Map<string, Promise<CraftDetail | null>>();
+
+/** Fetch (or return the cached) rich craft detail for a blueprint record guid.
+ *  Resolves to `null` when the blueprint has no recipe; command errors aren't
+ *  cached so a later view can retry. */
+export function ensureCraftDetail(guid: string): Promise<CraftDetail | null> {
+  if (_craftDetailCache.has(guid)) return Promise.resolve(_craftDetailCache.get(guid)!);
+  let p = _craftDetailInflight.get(guid);
+  if (!p) {
+    p = (async () => {
+      const r = await commands.getCraftDetail(guid);
+      _craftDetailInflight.delete(guid);
+      if (r.status === "ok") {
+        _craftDetailCache.set(guid, r.data);
+        return r.data;
+      }
+      return null;
+    })();
+    _craftDetailInflight.set(guid, p);
+  }
+  return p;
 }
 
 /** Re-pull the resource inventory from the DB (e.g. after a live inventory sync

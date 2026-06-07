@@ -13,6 +13,21 @@ async listBlueprints() : Promise<Result<BpView[], AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Fetch the rich crafting view for one blueprint: named material slots, each
+ * with its material, min-quality, and gameplay-property modifier curves. The
+ * `/crafting` page calls this lazily when a blueprint is selected (vs.
+ * `list_blueprints`, which stays lean for the catalog). `None` when the
+ * blueprint has no recipe / isn't in the catalog.
+ */
+async getCraftDetail(blueprintGuid: string) : Promise<Result<CraftDetail | null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_craft_detail", { blueprintGuid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listMissions() : Promise<Result<MissionView[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_missions") };
@@ -535,6 +550,65 @@ family_base_name: string | null;
  */
 recipe: Recipe | null }
 /**
+ * The rich, per-slot crafting view for one blueprint — the data behind the
+ * `/crafting` recipe calculator. Built from the same
+ * `sc_crafting::Blueprint.tiers[0].recipe` as [`Recipe`], but instead of
+ * flattening the cost tree it preserves the **named material slots**
+ * (`CraftingCost_Select.name_info` → "Frame" / "Cabling" / …) and each
+ * slot's **gameplay-property modifier curves** (how the chosen material's
+ * quality reshapes the crafted item's stats). Fetched on demand per
+ * blueprint (`get_craft_detail`), not embedded in the catalog's [`BpView`].
+ */
+export type CraftDetail = { 
+/**
+ * The blueprint this detail is for (hex GUID — matches
+ * [`BpView::blueprint_record_guid`]).
+ */
+blueprint_record_guid: string; 
+/**
+ * Total craft time normalized to seconds. Same value as
+ * [`Recipe::craft_time_seconds`].
+ */
+craft_time_seconds: number | null; 
+/**
+ * `CraftingGlobalParams.default_composition_quality` (500 in SC 4.8) —
+ * the "Base" reference quality the UI's presets and modifier curves
+ * anchor on. Global, repeated here so a single detail fetch is
+ * self-contained.
+ */
+default_quality: number; 
+/**
+ * One entry per named material slot, in the recipe's declared order.
+ */
+slots: RecipeSlot[] }
+/**
+ * One gameplay property a slot's material quality reshapes, with the curve
+ * to evaluate and the transform to display it. Projection of
+ * `sc_crafting::GameplayPropertyModifier` joined to its
+ * `CraftingGameplayPropertyDef` (display metadata).
+ */
+export type CraftModifier = { 
+/**
+ * Resolved property display name ("Recoil Smoothness", "Impact Force").
+ * `None` when the property GUID doesn't resolve. Note CIG's display name
+ * can differ from the record key.
+ */
+property_name: string | null; 
+/**
+ * Resolved unit-format string (a printf template like `"%.2f RPM"`).
+ * `None` when empty / `@LOC_EMPTY`.
+ */
+unit_format: string | null; 
+/**
+ * How to present the evaluated factor (percent change / scale / raw).
+ */
+transform: ModifierTransform; 
+/**
+ * Quality→value bands. Usually one; evaluated by picking the band that
+ * contains the quality (else the nearest), then linearly interpolating.
+ */
+ranges: ModifierRange[] }
+/**
  * The four authored difficulty axes, each a `1..=8` level (`0` = unparsed).
  * Hidden from players; surfaced for tooltip / sort, and the payout's driver.
  */
@@ -926,6 +1000,26 @@ placeholders: string[];
  */
 instance_count: number }
 /**
+ * Flattened `sc_crafting::ValueRange` — one quality→value band, linearly
+ * interpolated and clamped to `[start_quality, end_quality]`. `additive`
+ * distinguishes a multiplicative band (`Linear`, the common case — `×factor`)
+ * from an additive one (`LinearIntegerAdditive` — `+value`). Additive ints
+ * are widened to `f32`.
+ */
+export type ModifierRange = { additive: boolean; start_quality: number; end_quality: number; at_start: number; at_end: number }
+/**
+ * Flattened `sc_crafting::DisplayTransformation` — how a modifier's raw
+ * factor is shown. Kept as a tagged struct (not a data enum) for clean TS
+ * bindings. `kind` ∈ `scale` | `factor_to_percent` |
+ * `factor_to_negated_percent` | `value_to_factor` | `raw`. `raw` covers
+ * the rare `Sequence` / dormant variants (show the ×factor, no percent).
+ */
+export type ModifierTransform = { kind: string; 
+/**
+ * Scalar for `kind == "scale"`; `None` otherwise.
+ */
+scale_factor: number | null }
+/**
  * A blueprint the user has acquired in-game. Unique by
  * `(blueprint_guid, platform, account_id)` — the same BP can be
  * independently "owned" on prod and on a test shard, and across
@@ -1032,6 +1126,27 @@ craft_time_seconds: number | null;
  * declared cost order.
  */
 ingredients: Ingredient[] }
+/**
+ * One named material slot in a [`CraftDetail`] — a material plus the
+ * gameplay-property effects its quality drives.
+ */
+export type RecipeSlot = { 
+/**
+ * Resolved slot label ("Frame", "Cabling", "Power Regulator"). `None`
+ * for unnamed / placeholder slots (`<= PLACEHOLDER =>` in the DCB).
+ */
+slot_name: string | null; 
+/**
+ * The material that fills this slot (resource or item) — same shape the
+ * catalog uses, with `min_quality` and resolved `name`.
+ */
+ingredient: Ingredient; 
+/**
+ * Gameplay-property modifier curves attached to this slot. Empty when
+ * the slot drives no stats. Evaluated client-side against the slider
+ * quality (see `src/lib/domain/crafting.ts`).
+ */
+modifiers: CraftModifier[] }
 /**
  * Stable record-level identifier. UUIDv7 so it's time-sortable and
  * generated client-side without a central authority. Wraps `Uuid` rather

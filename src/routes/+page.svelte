@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
   import { SvelteSet } from "svelte/reactivity";
   import { commands, type BpView, type WishIntent } from "$lib/ipc";
   import { categoryFor } from "$lib/domain/categories";
   import Loading from "$lib/components/Loading.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import SyncButton from "$lib/components/SyncButton.svelte";
+  import RecipeDetail from "$lib/components/recipe/RecipeDetail.svelte";
+  import { persistentScroll } from "$lib/actions/scroll";
   import {
     type Craftable,
     nameOf,
     variantSuffix,
     collapseCraftables,
     formatCraftTime,
-    formatIngredientQty,
   } from "$lib/domain/catalog";
   import {
     data,
@@ -32,6 +34,19 @@
   // derived code below; `owned` / `wishRecipe` / `wishItem` / `wishSet` are the
   // shared reactive sets, imported above.
   const blueprints = $derived(data.blueprints);
+
+  // URL-driven recipe detail: `?bp=<rep guid>` opens the shared RecipeDetail as a
+  // full-width view (back/forward navigate between viewed recipes). Resolved from
+  // the entity-collapsed set so any interchangeable BP guid matches.
+  const selectedBp = $derived(page.url.searchParams.get("bp"));
+  const selectedCraftable = $derived(
+    selectedBp
+      ? (collapseCraftables(blueprints).find(
+          (c) => c.bpGuids.includes(selectedBp) || c.rep.blueprint_record_guid === selectedBp,
+        ) ?? null)
+      : null,
+  );
+
   let loading = $state(!(data.blueprintsReady && data.ownershipReady));
   let errorMessage = $state<string | null>(null);
   // Sync-button source state. The button refreshes the owned set from the best
@@ -49,6 +64,8 @@
   // panel. Leaf rows key on blueprint_record_guid; variant bundles
   // key on a stable composite (`bundle:<sorted-joined-guids>`).
   let expanded = new SvelteSet<string>();
+  // Preserve the catalog scroll position across the list ↔ detail (`?bp=`) toggle.
+  const keepScroll = persistentScroll();
 
   type Filter = "all" | "owned" | "unowned" | "wantbp" | "wantitem";
   let filter = $state<Filter>("all");
@@ -395,6 +412,10 @@
       has never run on this machine). Install/launch SC once and restart.
     </p>
   </div>
+{:else if selectedCraftable}
+  <div class="detail-wrap">
+    <RecipeDetail craftable={selectedCraftable} backHref="/" />
+  </div>
 {:else}
   <div class="filterbar">
     <div class="chips">
@@ -415,7 +436,7 @@
     </div>
   </div>
 
-  <section class="catalog">
+  <section class="catalog" use:keepScroll>
     {#each grouped as mainGroup (mainGroup.main)}
       <div class="maincat">
         <div class="maincat-head">
@@ -436,8 +457,7 @@
                   {@const c = item.item}
                   {@const bp = c.rep}
                   {@const isOwned = craftableOwned(c)}
-                  {@const isExpanded = expanded.has(c.entityKey)}
-                  <li class:owned={isOwned} class:expanded={isExpanded}>
+                  <li class:owned={isOwned}>
                     <div class="bp-row">
                       <!-- Fixed-width status column so leaf checkmarks line up
                            with bundle "x/y" counts (same 2.4rem footprint). -->
@@ -451,12 +471,7 @@
                           {isOwned ? "✓" : ""}
                         </button>
                       </span>
-                      <button
-                        class="bp-expand"
-                        title={isExpanded ? "Hide recipe" : "Show recipe"}
-                        onclick={() => toggleExpanded(c.entityKey)}
-                      >
-                        <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
+                      <a class="bp-open" href="?bp={bp.blueprint_record_guid}" title="Open recipe">
                         <span class="bp-name">{item.baseName}</span>
                         {#if c.bpGuids.length > 1}
                           <span class="dup-tag" title="{c.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{c.bpGuids.length} BPs</span>
@@ -464,7 +479,7 @@
                         {#if bp.recipe?.craft_time_seconds}
                           <span class="bp-time" title="Craft time">⏱ {formatCraftTime(bp.recipe.craft_time_seconds)}</span>
                         {/if}
-                      </button>
+                      </a>
 
                       <!-- Wishlist: ⚐ want the blueprint (only while unowned —
                            owning it means you have the recipe), ♡ want a
@@ -489,34 +504,6 @@
                         >♡</button>
                       </div>
                     </div>
-
-                    {#if isExpanded}
-                      <div class="recipe-panel">
-                        {#if bp.recipe}
-                          {#if bp.recipe.ingredients.length > 0}
-                            <ul class="ingredients">
-                              <!-- Composite key with index: some recipes legitimately list
-                                   the same resource GUID twice (different piles / qualities),
-                                   so the bare GUID isn't unique. -->
-                              {#each bp.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
-                                {@const q = formatIngredientQty(ing)}
-                                <li class="ingredient">
-                                  <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
-                                  <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
-                                  {#if ing.min_quality > 0}
-                                    <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
-                                  {/if}
-                                </li>
-                              {/each}
-                            </ul>
-                          {:else}
-                            <span class="recipe-empty">Recipe has no listed ingredients.</span>
-                          {/if}
-                        {:else}
-                          <span class="recipe-empty">No recipe data for this blueprint.</span>
-                        {/if}
-                      </div>
-                    {/if}
                   </li>
                 {:else}
                   {@const bundle = item}
@@ -539,7 +526,7 @@
                       </span>
                       <button
                         class="bp-expand"
-                        title={isExpanded ? "Hide variants & recipe" : "Show variants & recipe"}
+                        title={isExpanded ? "Hide variants" : "Show variants"}
                         onclick={() => toggleExpanded(bundle.expandKey)}
                       >
                         <span class="chevron" class:open={isExpanded} aria-hidden="true">▸</span>
@@ -557,20 +544,6 @@
 
                     {#if isExpanded}
                       <div class="recipe-panel">
-                        {#if bundle.recipe && bundle.recipe.ingredients.length > 0}
-                          <ul class="ingredients">
-                            {#each bundle.recipe.ingredients as ing, i (`${ing.guid}|${i}`)}
-                              {@const q = formatIngredientQty(ing)}
-                              <li class="ingredient">
-                                <span class="ing-qty">{q.amount}{#if q.unit} <span class="ing-unit">{q.unit}</span>{/if}</span>
-                                <span class="ing-name">{ing.name ?? "Unknown ingredient"}</span>
-                                {#if ing.min_quality > 0}
-                                  <span class="ing-quality" title="Minimum required quality">≥ Q{ing.min_quality}</span>
-                                {/if}
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
                         <div class="variant-list">
                           {#each bundle.items as vc (vc.entityKey)}
                             {@const vOwned = craftableOwned(vc)}
@@ -585,7 +558,7 @@
                               >
                                 {vOwned ? "✓" : ""}
                               </button>
-                              <span class="variant-name" class:base={isBase}>{suffix}</span>
+                              <a class="variant-name" class:base={isBase} href="?bp={vc.rep.blueprint_record_guid}" title="Open recipe">{suffix}</a>
                               {#if vc.bpGuids.length > 1}
                                 <span class="dup-tag" title="{vc.bpGuids.length} interchangeable blueprints craft this item — marking owned covers all of them">{vc.bpGuids.length} BPs</span>
                               {/if}
@@ -798,10 +771,6 @@
     background: var(--panel);
     border-color: var(--line);
   }
-  li.owned.expanded {
-    background: linear-gradient(90deg, var(--ember-glow), var(--panel) 60%);
-    border-color: var(--ember-dim);
-  }
   .bp-row {
     display: flex;
     align-items: center;
@@ -839,9 +808,10 @@
     color: var(--on-ember);
     font-weight: 700;
   }
-  /* The expand button is a transparent affordance over most of the row;
-     it carries the name, chevron, GUID, and a craft-time chip. */
-  .bp-expand {
+  /* Row name affordance — a transparent button (bundle: toggles variants) or
+     link (leaf/variant: opens the recipe detail), carrying the name + chips. */
+  .bp-expand,
+  .bp-open {
     flex: 1;
     display: flex;
     align-items: center;
@@ -850,12 +820,17 @@
     background: transparent;
     border: none;
     color: inherit;
+    text-decoration: none;
     text-align: left;
     cursor: pointer;
     min-width: 0;
   }
   .bp-expand:hover .chevron,
   .bp-expand:focus-visible .chevron {
+    color: var(--ember);
+  }
+  .bp-open:hover .bp-name,
+  .bp-open:focus-visible .bp-name {
     color: var(--ember);
   }
   .chevron {
@@ -929,57 +904,17 @@
     opacity: 0.3;
   }
 
-  /* ── Recipe panel (visible when a row is expanded) ── */
-  .recipe-panel {
-    padding: 0.4rem 0.8rem 0.7rem 2.4rem;
-    border-top: 1px dashed var(--line);
-    margin: 0 0.6rem;
-  }
-  .ingredients {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  .ingredient {
-    display: flex;
-    align-items: baseline;
-    gap: 0.7rem;
-    padding: 0.15rem 0;
-    border: none;
-  }
-  .ingredient:hover {
-    background: transparent;
-  }
-  .ing-qty {
-    flex: 0 0 4.5rem;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.82rem;
-    color: var(--ember);
-    font-weight: 500;
-  }
-  .ing-unit {
-    font-size: 0.65rem;
-    color: var(--faint);
-    font-weight: 400;
-    margin-left: 0.1rem;
-  }
-  .ing-name {
+  /* Detail view — the shared RecipeDetail when `?bp=` is set. */
+  .detail-wrap {
     flex: 1;
-    font-size: 0.85rem;
-    color: var(--text);
+    overflow-y: auto;
+    padding: 1.2rem 1.6rem 2rem;
   }
-  .ing-quality {
-    font-size: 0.7rem;
-    color: var(--muted);
-    padding: 0.05rem 0.35rem;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-  }
-  .recipe-empty {
-    font-size: 0.8rem;
-    color: var(--faint);
-    font-style: italic;
+
+  /* ── Variant expansion panel (the bundle's variant list) ── */
+  .recipe-panel {
+    padding: 0.2rem 0.8rem 0.7rem 2.4rem;
+    margin: 0 0.6rem;
   }
 
   /* ── Variant bundles ── */
@@ -1033,9 +968,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
-    margin-top: 0.45rem;
-    padding-top: 0.45rem;
-    border-top: 1px dashed var(--line);
   }
   .variant {
     display: flex;
@@ -1059,6 +991,7 @@
     flex: 1;
     font-size: 0.85rem;
     color: var(--text);
+    text-decoration: none;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1067,6 +1000,11 @@
   .variant-name.base {
     color: var(--muted);
     font-style: italic;
+  }
+  /* After `.base` so it wins on hover for the Standard row too (equal
+     specificity → source order decides). */
+  .variant-name:hover {
+    color: var(--ember);
   }
   .variant .wish {
     font-size: 0.95rem;

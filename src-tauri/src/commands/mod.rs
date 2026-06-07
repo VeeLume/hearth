@@ -12,5 +12,6 @@
 pub(crate) mod accounts;
 pub(crate) mod blueprints;
 pub(crate) mod catalog;
+pub(crate) mod crafting;
 pub(crate) mod inventory;
 pub(crate) mod missions;

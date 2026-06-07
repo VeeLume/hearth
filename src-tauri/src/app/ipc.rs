@@ -14,6 +14,7 @@ use crate::{commands, inventory_sync, live_sync, settings};
 pub fn ipc_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         commands::blueprints::list_blueprints,
+        commands::crafting::get_craft_detail,
         commands::missions::list_missions,
         commands::missions::missions_by_blueprint,
         commands::blueprints::list_owned,

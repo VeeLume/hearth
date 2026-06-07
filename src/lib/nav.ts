@@ -12,11 +12,11 @@ export type NavItem = {
 export const primaryNav: NavItem[] = [
   { href: "/", label: "Catalog", icon: "▣" },
   { href: "/missions", label: "Missions", icon: "◆" },
+  { href: "/crafting", label: "Crafting", icon: "⚒" },
   { href: "/wishlist", label: "Wishlist", icon: "♥" },
   { href: "/resources", label: "Resources", icon: "⛏" },
 ];
 
 export const futureNav: NavItem[] = [
-  { href: "/crafting", label: "Crafting", icon: "⚒", soon: true },
   { href: "/community", label: "Community", icon: "❖", soon: true },
 ];
