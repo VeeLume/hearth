@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-07
+
+### Added
+
+- **Crafting page — a recipe calculator.** A new **Crafting** tab. Open any
+  blueprint to see its recipe as named **material slots** (Frame, Cabling, Power
+  Regulator, …), each with the material, amount, minimum quality, and a **quality
+  slider**. Every slot lists the **gameplay-property effects** its material's
+  quality drives — Recoil Smoothness, Impact Force, and the rest — with their
+  curves, recomputed live as you drag, alongside the craft time and the missions
+  that grant the blueprint. Quality **presets** (Min / Base / 50% / Max) and
+  **Best in stock** set every slot at once, and an **"Open at"** preference picks
+  the quality recipes open at.
+- **Crafting planner.** The Crafting tab leads with what you can do right now:
+  **Want to make** (your ♡ wishlist items), **Ready to craft** (recipes you own
+  that your materials fully cover), and **Almost** (the ones you're a material or
+  two short on). The coverage sections light up once the optional live resource
+  sync is on.
+- **Materials coverage in the recipe.** Each slot shows **have vs need**, the
+  **best quality** you hold, and **where it's stored**; the **Best in stock**
+  preset snaps every slot to the best quality you own (Base for materials you
+  don't have).
+
+### Changed
+
+- **Recipes open as a full detail view.** Clicking a blueprint in the **Catalog**
+  (or Wishlist) now opens its recipe on its own page — with working browser
+  back/forward — rather than expanding inline. The recipe, materials coverage, and
+  quality calculator share one view across the catalog, wishlist, and crafting
+  planner.
+- **The Wishlist is a lean overview.** Want-item rows show their status and open
+  the full recipe (with coverage) on click, instead of carrying an inline
+  breakdown.
+- **"Granted by" links land on the right missions.** Mission links from a recipe
+  or the wishlist open the Missions tab filtered to the missions that grant it.
+
+### Known limitations
+
+- **Final item stats aren't computed yet.** Hearth models each material's
+  per-quality modifiers, but the crafted item's absolute stats need a
+  gameplay-property → base-stat link that isn't present in the static game data —
+  the recipe view reserves a *Product Stats* panel for when it lands.
+- The planner's **Ready to craft** / **Almost** sections need the optional live
+  resource sync enabled.
+
 ## [0.3.0] - 2026-06-06
 
 ### Added
@@ -95,7 +140,9 @@ First public alpha — a personal, offline-first blueprint / mission / wishlist 
 - **Offline mode** — a single *Online features* switch disables all network use while leaving local tracking fully working.
 - **First-launch onboarding** and **auto-update** (signed; checks GitHub Releases on launch, skipped in offline mode).
 
-[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/VeeLume/hearth/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/VeeLume/hearth/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/VeeLume/hearth/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VeeLume/hearth/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/VeeLume/hearth/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/VeeLume/hearth/compare/v0.1.0...v0.1.1
