@@ -17,8 +17,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use hearth_core::{
-    Account, IngredientKind, InventoryLocationKind, InventoryStack, OwnedBlueprint, Platform,
-    RecordId, WishIntent, WishlistEntry,
+    Account, CraftPlanEntry, CraftProject, IngredientKind, InventoryLocationKind, InventoryStack,
+    OwnedBlueprint, Platform, RecordId, WishIntent, WishlistEntry,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Sqlite};
@@ -343,6 +343,21 @@ pub async fn merge_accounts(pool: &DbPool, from: RecordId, into: RecordId) -> Re
         .execute(&mut *tx)
         .await
         .context("reassigning resource inventory")?;
+    // Craft plan + projects have no scope-unique constraint, so a plain reassign
+    // is enough. `craft_plan_entries.project_id` references `craft_projects.id`
+    // (unchanged by an account reassign), so the FK stays intact.
+    sqlx::query("UPDATE craft_projects SET account_id = ? WHERE account_id = ?")
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("reassigning craft projects")?;
+    sqlx::query("UPDATE craft_plan_entries SET account_id = ? WHERE account_id = ?")
+        .bind(&into_s)
+        .bind(&from_s)
+        .execute(&mut *tx)
+        .await
+        .context("reassigning craft plan entries")?;
 
     // Move from's aliases onto into.
     sqlx::query("UPDATE account_aliases SET account_id = ? WHERE account_id = ?")
@@ -840,6 +855,401 @@ fn row_to_inventory(row: InventoryRow) -> Result<InventoryStack> {
     })
 }
 
+// ── Craft projects ────────────────────────────────────────────────────────────
+
+/// List the scope's projects, in manual (`sort_key`) order.
+pub async fn list_craft_projects(pool: &DbPool, scope: Scope) -> Result<Vec<CraftProject>> {
+    let rows: Vec<ProjectRow> = sqlx::query_as(
+        "SELECT id, name, notes, sort_key, active, platform_id, account_id, created_at, updated_at \
+         FROM craft_projects WHERE account_id = ? AND platform_id = ? ORDER BY sort_key, created_at",
+    )
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_all(pool)
+    .await
+    .context("listing craft_projects")?;
+    rows.into_iter().map(row_to_project).collect()
+}
+
+/// Create a project. `sort_key` defaults to the creation timestamp so new
+/// projects sort to the end until manual reordering moves them.
+pub async fn create_craft_project(
+    pool: &DbPool,
+    scope: Scope,
+    name: &str,
+) -> Result<CraftProject> {
+    let id = RecordId::new_v7();
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    sqlx::query(
+        "INSERT INTO craft_projects \
+         (id, account_id, platform_id, name, notes, sort_key, active, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, NULL, ?, 1, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .bind(name)
+    .bind(&now_s)
+    .bind(&now_s)
+    .bind(&now_s)
+    .execute(pool)
+    .await
+    .context("inserting craft_projects")?;
+    Ok(CraftProject {
+        id,
+        name: name.to_string(),
+        notes: None,
+        sort_key: now_s,
+        active: true,
+        platform: scope.platform,
+        account_id: scope.account_id,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Toggle whether a project counts toward the rollup + reservation. Scoped.
+pub async fn set_craft_project_active(
+    pool: &DbPool,
+    scope: Scope,
+    id: RecordId,
+    active: bool,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE craft_projects SET active = ?, updated_at = ? \
+         WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(i64::from(active))
+    .bind(Utc::now().to_rfc3339())
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .execute(pool)
+    .await
+    .context("updating craft_projects active")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Apply a manual project order: `sort_key` becomes the zero-padded index of
+/// each id in `ordered`. Ids not in scope are skipped. One transaction.
+pub async fn reorder_craft_projects(
+    pool: &DbPool,
+    scope: Scope,
+    ordered: &[RecordId],
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await.context("beginning project reorder")?;
+    for (i, id) in ordered.iter().enumerate() {
+        sqlx::query(
+            "UPDATE craft_projects SET sort_key = ?, updated_at = ? \
+             WHERE id = ? AND account_id = ? AND platform_id = ?",
+        )
+        .bind(format!("{i:08}"))
+        .bind(&now)
+        .bind(id.to_string())
+        .bind(scope.account_id.to_string())
+        .bind(scope.platform.as_str())
+        .execute(&mut *tx)
+        .await
+        .context("reordering craft_projects")?;
+    }
+    tx.commit().await.context("committing project reorder")?;
+    Ok(())
+}
+
+/// Rename / re-note a project (scoped so a stale id from another account can't
+/// touch it). Returns the updated row, or `None` if no such project in scope.
+pub async fn update_craft_project(
+    pool: &DbPool,
+    scope: Scope,
+    id: RecordId,
+    name: &str,
+    notes: Option<&str>,
+) -> Result<Option<CraftProject>> {
+    let result = sqlx::query(
+        "UPDATE craft_projects SET name = ?, notes = ?, updated_at = ? \
+         WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(name)
+    .bind(notes)
+    .bind(Utc::now().to_rfc3339())
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .execute(pool)
+    .await
+    .context("updating craft_projects")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_craft_project(pool, scope, id).await
+}
+
+pub async fn get_craft_project(
+    pool: &DbPool,
+    scope: Scope,
+    id: RecordId,
+) -> Result<Option<CraftProject>> {
+    let row: Option<ProjectRow> = sqlx::query_as(
+        "SELECT id, name, notes, sort_key, platform_id, account_id, created_at, updated_at \
+         FROM craft_projects WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_optional(pool)
+    .await
+    .context("selecting craft_projects by id")?;
+    row.map(row_to_project).transpose()
+}
+
+/// Delete a project. Members are un-filed (`project_id` → NULL) by the
+/// `ON DELETE SET NULL` FK, not dropped. Scoped. Returns whether a row went.
+pub async fn delete_craft_project(pool: &DbPool, scope: Scope, id: RecordId) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM craft_projects WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .execute(pool)
+    .await
+    .context("deleting craft_projects")?;
+    Ok(result.rows_affected() > 0)
+}
+
+type ProjectRow = (
+    String,         // id
+    String,         // name
+    Option<String>, // notes
+    String,         // sort_key
+    i64,            // active
+    String,         // platform_id
+    String,         // account_id
+    String,         // created_at
+    String,         // updated_at
+);
+
+fn row_to_project(row: ProjectRow) -> Result<CraftProject> {
+    let (id, name, notes, sort_key, active, platform_id, account_id, created_at, updated_at) = row;
+    Ok(CraftProject {
+        id: RecordId(id.parse().context("parsing craft project id")?),
+        name,
+        notes,
+        sort_key,
+        active: active != 0,
+        platform: Platform::from_str(&platform_id)
+            .with_context(|| format!("unknown platform_id {platform_id:?}"))?,
+        account_id: RecordId(account_id.parse().context("parsing account_id")?),
+        created_at: parse_ts(&created_at, "craft project created_at")?,
+        updated_at: parse_ts(&updated_at, "craft project updated_at")?,
+    })
+}
+
+// ── Craft plan entries ──────────────────────────────────────────────────────
+
+/// List the scope's planned crafts, in manual (`sort_key`) order (then by id,
+/// the UUIDv7 creation-order tiebreak).
+pub async fn list_craft_plan(pool: &DbPool, scope: Scope) -> Result<Vec<CraftPlanEntry>> {
+    let rows: Vec<PlanRow> = sqlx::query_as(
+        "SELECT id, project_id, blueprint_guid, quantity, target_quality, sort_key, notes, \
+         platform_id, account_id, created_at, updated_at FROM craft_plan_entries \
+         WHERE account_id = ? AND platform_id = ? ORDER BY sort_key, id",
+    )
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_all(pool)
+    .await
+    .context("listing craft_plan_entries")?;
+    rows.into_iter().map(row_to_plan).collect()
+}
+
+/// Add a planned craft with default attributes (qty 1, Base quality), optionally
+/// filed under a project. `sort_key` seeds to the new id (UUIDv7 → sorts to the
+/// end). Returns the new entry. The same blueprint may be added more than once.
+pub async fn add_craft_plan_entry(
+    pool: &DbPool,
+    scope: Scope,
+    blueprint_guid: &str,
+    project_id: Option<RecordId>,
+) -> Result<CraftPlanEntry> {
+    let id = RecordId::new_v7();
+    let id_s = id.to_string();
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    sqlx::query(
+        "INSERT INTO craft_plan_entries \
+         (id, account_id, platform_id, project_id, blueprint_guid, quantity, target_quality, \
+          sort_key, notes, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, 1, NULL, ?, NULL, ?, ?)",
+    )
+    .bind(&id_s)
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .bind(project_id.map(|p| p.to_string()))
+    .bind(blueprint_guid)
+    .bind(&id_s)
+    .bind(&now_s)
+    .bind(&now_s)
+    .execute(pool)
+    .await
+    .context("inserting craft_plan_entries")?;
+    Ok(CraftPlanEntry {
+        id,
+        project_id,
+        blueprint_guid: blueprint_guid.to_string(),
+        quantity: 1,
+        target_quality: None,
+        sort_key: id_s,
+        notes: None,
+        platform: scope.platform,
+        account_id: scope.account_id,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Overwrite a plan entry's editable fields (the UI always sends the full
+/// current state, so there's no partial-update ambiguity — `target_quality` /
+/// `project_id` / `notes` of `None` mean "Base / Unsorted / no note", not
+/// "leave unchanged"). `sort_key` is managed by [`reorder_craft_plan`], not
+/// here. Scoped. Returns the updated row, or `None` if absent.
+pub async fn update_craft_plan_entry(
+    pool: &DbPool,
+    scope: Scope,
+    id: RecordId,
+    project_id: Option<RecordId>,
+    quantity: i32,
+    target_quality: Option<i32>,
+    notes: Option<&str>,
+) -> Result<Option<CraftPlanEntry>> {
+    let result = sqlx::query(
+        "UPDATE craft_plan_entries SET project_id = ?, quantity = ?, target_quality = ?, \
+         notes = ?, updated_at = ? \
+         WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(project_id.map(|p| p.to_string()))
+    .bind(quantity.max(1))
+    .bind(target_quality)
+    .bind(notes)
+    .bind(Utc::now().to_rfc3339())
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .execute(pool)
+    .await
+    .context("updating craft_plan_entries")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let row: Option<PlanRow> = sqlx::query_as(
+        "SELECT id, project_id, blueprint_guid, quantity, target_quality, sort_key, notes, \
+         platform_id, account_id, created_at, updated_at FROM craft_plan_entries \
+         WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .fetch_optional(pool)
+    .await
+    .context("selecting updated craft_plan_entries")?;
+    row.map(row_to_plan).transpose()
+}
+
+/// Apply a manual entry order: `sort_key` becomes the zero-padded index of each
+/// id in `ordered`. Caller passes one group's ids (or any subset); ids out of
+/// scope are skipped. One transaction.
+pub async fn reorder_craft_plan(pool: &DbPool, scope: Scope, ordered: &[RecordId]) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await.context("beginning plan reorder")?;
+    for (i, id) in ordered.iter().enumerate() {
+        sqlx::query(
+            "UPDATE craft_plan_entries SET sort_key = ?, updated_at = ? \
+             WHERE id = ? AND account_id = ? AND platform_id = ?",
+        )
+        .bind(format!("{i:08}"))
+        .bind(&now)
+        .bind(id.to_string())
+        .bind(scope.account_id.to_string())
+        .bind(scope.platform.as_str())
+        .execute(&mut *tx)
+        .await
+        .context("reordering craft_plan_entries")?;
+    }
+    tx.commit().await.context("committing plan reorder")?;
+    Ok(())
+}
+
+/// Remove a planned craft. Scoped. Returns whether a row went.
+pub async fn remove_craft_plan_entry(pool: &DbPool, scope: Scope, id: RecordId) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM craft_plan_entries WHERE id = ? AND account_id = ? AND platform_id = ?",
+    )
+    .bind(id.to_string())
+    .bind(scope.account_id.to_string())
+    .bind(scope.platform.as_str())
+    .execute(pool)
+    .await
+    .context("deleting craft_plan_entries")?;
+    Ok(result.rows_affected() > 0)
+}
+
+type PlanRow = (
+    String,         // id
+    Option<String>, // project_id
+    String,         // blueprint_guid
+    i64,            // quantity
+    Option<i64>,    // target_quality
+    String,         // sort_key
+    Option<String>, // notes
+    String,         // platform_id
+    String,         // account_id
+    String,         // created_at
+    String,         // updated_at
+);
+
+fn row_to_plan(row: PlanRow) -> Result<CraftPlanEntry> {
+    let (
+        id,
+        project_id,
+        blueprint_guid,
+        quantity,
+        target_quality,
+        sort_key,
+        notes,
+        platform_id,
+        account_id,
+        created_at,
+        updated_at,
+    ) = row;
+    Ok(CraftPlanEntry {
+        id: RecordId(id.parse().context("parsing craft plan id")?),
+        project_id: project_id
+            .map(|p| p.parse().map(RecordId).context("parsing project_id"))
+            .transpose()?,
+        blueprint_guid,
+        quantity: i32::try_from(quantity).context("plan quantity out of i32 range")?,
+        target_quality: target_quality
+            .map(|q| i32::try_from(q).context("target_quality out of i32 range"))
+            .transpose()?,
+        sort_key,
+        notes,
+        platform: Platform::from_str(&platform_id)
+            .with_context(|| format!("unknown platform_id {platform_id:?}"))?,
+        account_id: RecordId(account_id.parse().context("parsing account_id")?),
+        created_at: parse_ts(&created_at, "craft plan created_at")?,
+        updated_at: parse_ts(&updated_at, "craft plan updated_at")?,
+    })
+}
+
+/// Parse an RFC3339 timestamp into a UTC `DateTime`, with a labelled error.
+fn parse_ts(s: &str, what: &str) -> Result<chrono::DateTime<Utc>> {
+    Ok(chrono::DateTime::parse_from_rfc3339(s)
+        .with_context(|| format!("parsing {what}"))?
+        .with_timezone(&Utc))
+}
+
 // ── App settings (key/value, app-global) ─────────────────────────────────────
 
 /// Read an app-global setting by key. `None` if unset.
@@ -1291,5 +1701,101 @@ mod tests {
             account_id_for_handle(&pool, "FreshName").await.unwrap(),
             Some(x.id)
         );
+    }
+
+    #[tokio::test]
+    async fn craft_plan_roundtrip_reorder_and_project_unfile() {
+        let pool = open_in_memory().await.unwrap();
+        let a = account(&pool, "VeeLume").await;
+        let s = scope(&a, Platform::Prod);
+
+        let proj = create_craft_project(&pool, s, "Maelstrom Loadout")
+            .await
+            .unwrap();
+        assert!(proj.active, "projects start active");
+        assert_eq!(list_craft_projects(&pool, s).await.unwrap().len(), 1);
+
+        // An entry filed under the project, with defaults.
+        let e = add_craft_plan_entry(&pool, s, "bp-hammer", Some(proj.id))
+            .await
+            .unwrap();
+        assert_eq!(e.quantity, 1);
+        assert_eq!(e.target_quality, None);
+        assert_eq!(e.project_id, Some(proj.id));
+        assert_eq!(e.sort_key, e.id.to_string(), "sort_key seeds to the id");
+
+        // The same blueprint can be planned again (e.g. unsorted) — no unique gate.
+        let e2 = add_craft_plan_entry(&pool, s, "bp-hammer", None).await.unwrap();
+        assert_eq!(list_craft_plan(&pool, s).await.unwrap().len(), 2);
+
+        // Full-state update (no horizon any more).
+        let updated =
+            update_craft_plan_entry(&pool, s, e.id, Some(proj.id), 3, Some(750), Some("rush"))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(updated.quantity, 3);
+        assert_eq!(updated.target_quality, Some(750));
+        assert_eq!(updated.notes.as_deref(), Some("rush"));
+
+        // Manual reorder: e2 before e → padded sort_keys, list reflects it.
+        reorder_craft_plan(&pool, s, &[e2.id, e.id]).await.unwrap();
+        let ordered = list_craft_plan(&pool, s).await.unwrap();
+        assert_eq!(ordered[0].id, e2.id);
+        assert_eq!(ordered[0].sort_key, "00000000");
+        assert_eq!(ordered[1].id, e.id);
+
+        // Project active toggle.
+        assert!(set_craft_project_active(&pool, s, proj.id, false).await.unwrap());
+        assert!(!list_craft_projects(&pool, s).await.unwrap()[0].active);
+
+        // Deleting the project un-files its members (kept, project_id → NULL).
+        assert!(delete_craft_project(&pool, s, proj.id).await.unwrap());
+        let after = list_craft_plan(&pool, s).await.unwrap();
+        assert_eq!(after.len(), 2, "entries survive project deletion");
+        assert!(after.iter().all(|x| x.project_id.is_none()));
+
+        // Quantity floors at 1.
+        let floored = update_craft_plan_entry(&pool, s, e.id, None, 0, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(floored.quantity, 1);
+
+        assert!(remove_craft_plan_entry(&pool, s, e.id).await.unwrap());
+        assert_eq!(list_craft_plan(&pool, s).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn craft_plan_scope_isolation_and_merge() {
+        let pool = open_in_memory().await.unwrap();
+        let from = account(&pool, "OldName").await;
+        let into = account(&pool, "NewName").await;
+        let sf = scope(&from, Platform::Prod);
+        let si = scope(&into, Platform::Prod);
+
+        let pf = create_craft_project(&pool, sf, "From Project").await.unwrap();
+        add_craft_plan_entry(&pool, sf, "bp-1", Some(pf.id)).await.unwrap();
+        add_craft_plan_entry(&pool, si, "bp-2", None).await.unwrap();
+
+        // Scoped: each account sees only its own.
+        assert_eq!(list_craft_plan(&pool, sf).await.unwrap().len(), 1);
+        assert_eq!(list_craft_plan(&pool, si).await.unwrap().len(), 1);
+        // A stale id from another scope can't be updated/deleted.
+        assert!(
+            update_craft_plan_entry(&pool, si, pf.id, None, 1, None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        merge_accounts(&pool, from.id, into.id).await.unwrap();
+
+        // Both projects + entries now belong to the survivor, FK intact.
+        assert_eq!(list_craft_projects(&pool, si).await.unwrap().len(), 1);
+        let merged = list_craft_plan(&pool, si).await.unwrap();
+        assert_eq!(merged.len(), 2);
+        let filed = merged.iter().find(|e| e.blueprint_guid == "bp-1").unwrap();
+        assert_eq!(filed.project_id, Some(pf.id));
     }
 }

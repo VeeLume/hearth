@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Crafting planner — projects, reservations, quality targets.** The Crafting
+  page is now a plan you can steer. Group planned crafts into **projects** (a
+  loadout, an armour set) and **drag to reorder** entries and projects; set
+  **how many** to make and a **target quality** per craft. A **Materials needed**
+  panel allocates your inventory across the whole plan in priority order — a
+  shared pool spent down once per stack — so it shows an honest *need · have ·
+  reserved · free · short* instead of letting the same Iron cover every craft.
+  Quality is a real gate: a craft only draws stacks at or above its target, so a
+  shortfall reads as *"buy more"* or *"need higher quality."* **Park** a project
+  to drop it from the totals, **expand** a row for its per-material breakdown,
+  and flip to **Craftable now** to see the owned recipes your materials can make
+  right away. Add items from a searchable picker (your ♡ wishlist leads the
+  suggestions); it all degrades to a plain shopping list when resource sync is
+  off.
 - **Product Stats in the recipe view.** The recipe's reserved *Product Stats*
   panel now shows the crafted item's **final stats** — each base value (fire
   rate, damage, recoil, armor mitigation, integrity, quantum speed, shield HP,

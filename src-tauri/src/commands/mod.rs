@@ -15,3 +15,4 @@ pub(crate) mod catalog;
 pub(crate) mod crafting;
 pub(crate) mod inventory;
 pub(crate) mod missions;
+pub(crate) mod plan;

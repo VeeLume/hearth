@@ -26,6 +26,8 @@ import {
   type MissionRef,
   type WishIntent,
   type InventoryStack,
+  type CraftPlanEntry,
+  type CraftProject,
 } from "$lib/ipc";
 
 // Ownership sets — shared so a toggle on any page updates them everywhere.
@@ -41,11 +43,15 @@ let _blueprints = $state<BpView[]>([]);
 let _missions = $state<MissionView[]>([]);
 let _grantedBy = $state<Partial<Record<string, MissionRef[]>>>({});
 let _inventory = $state<InventoryStack[]>([]);
+let _craftPlan = $state<CraftPlanEntry[]>([]);
+let _craftProjects = $state<CraftProject[]>([]);
 let _blueprintsReady = $state(false);
 let _missionsReady = $state(false);
 let _ownershipReady = $state(false);
 let _grantedByReady = $state(false);
 let _inventoryReady = $state(false);
+let _craftPlanReady = $state(false);
+let _craftProjectsReady = $state(false);
 
 // Inventory stacks indexed by their CRC (resource_id / class_crc) — the match
 // key a recipe ingredient (`Ingredient.crc`) joins on for want-item coverage.
@@ -76,6 +82,20 @@ export const data = {
   /** Inventory stacks keyed by CRC — the want-item coverage join. */
   get inventoryByCrc() {
     return _inventoryByCrc;
+  },
+  /** Planned crafts (the crafting planner's source of truth). */
+  get craftPlan() {
+    return _craftPlan;
+  },
+  /** Named project groups for the plan. */
+  get craftProjects() {
+    return _craftProjects;
+  },
+  get craftPlanReady() {
+    return _craftPlanReady;
+  },
+  get craftProjectsReady() {
+    return _craftProjectsReady;
   },
   get blueprintsReady() {
     return _blueprintsReady;
@@ -302,4 +322,160 @@ export async function toggleWishlist(guid: string, intent: WishIntent): Promise<
   if (wasWanted) set.add(guid);
   else set.delete(guid);
   return errText(result.error);
+}
+
+// ── Craft plan + projects ───────────────────────────────────────────────────
+// The planner's persisted state. The reservation ledger over these + the
+// inventory is derived in the page (lib/domain/plan.ts), not stored.
+
+let planPromise: Promise<string | null> | null = null;
+let projPromise: Promise<string | null> | null = null;
+
+export function ensureCraftPlan(): Promise<string | null> {
+  if (_craftPlanReady) return Promise.resolve(null);
+  if (!planPromise) {
+    planPromise = (async () => {
+      const r = await commands.listCraftPlan();
+      if (r.status === "ok") {
+        _craftPlan = r.data;
+        _craftPlanReady = true;
+        return null;
+      }
+      planPromise = null;
+      return errText(r.error);
+    })();
+  }
+  return planPromise;
+}
+
+export function ensureCraftProjects(): Promise<string | null> {
+  if (_craftProjectsReady) return Promise.resolve(null);
+  if (!projPromise) {
+    projPromise = (async () => {
+      const r = await commands.listCraftProjects();
+      if (r.status === "ok") {
+        _craftProjects = r.data;
+        _craftProjectsReady = true;
+        return null;
+      }
+      projPromise = null;
+      return errText(r.error);
+    })();
+  }
+  return projPromise;
+}
+
+/** Add a blueprint to the plan (defaults: qty 1, Base quality, Next horizon),
+ *  optionally under a project. Returns an error string, or null on success. */
+export async function addPlanEntry(
+  blueprintGuid: string,
+  projectId: string | null = null,
+): Promise<string | null> {
+  const r = await commands.addCraftPlanEntry(blueprintGuid, projectId);
+  if (r.status === "ok") {
+    _craftPlan = [..._craftPlan, r.data];
+    return null;
+  }
+  return errText(r.error);
+}
+
+/** Persist a plan entry's edited fields (the UI sends the full current state). */
+export async function updatePlanEntry(e: CraftPlanEntry): Promise<string | null> {
+  const r = await commands.updateCraftPlanEntry(
+    e.id,
+    e.project_id,
+    e.quantity,
+    e.target_quality,
+    e.notes,
+  );
+  if (r.status === "ok") {
+    if (r.data) {
+      const updated = r.data;
+      _craftPlan = _craftPlan.map((x) => (x.id === updated.id ? updated : x));
+    }
+    return null;
+  }
+  return errText(r.error);
+}
+
+export async function removePlanEntry(id: string): Promise<string | null> {
+  const r = await commands.removeCraftPlanEntry(id);
+  if (r.status === "ok") {
+    _craftPlan = _craftPlan.filter((x) => x.id !== id);
+    return null;
+  }
+  return errText(r.error);
+}
+
+/** Apply a manual entry order — `ids` in the new display order. Updates the
+ *  shared `sort_key`s locally so the derived order reflects immediately. */
+export async function reorderPlan(ids: string[]): Promise<string | null> {
+  const padded = new Map(ids.map((id, i) => [id, String(i).padStart(8, "0")]));
+  _craftPlan = _craftPlan.map((e) =>
+    padded.has(e.id) ? { ...e, sort_key: padded.get(e.id)! } : e,
+  );
+  const r = await commands.reorderCraftPlan(ids);
+  return r.status === "ok" ? null : errText(r.error);
+}
+
+/** Create a project; resolves to `{ project, error }`. */
+export async function createProject(
+  name: string,
+): Promise<{ project: CraftProject | null; error: string | null }> {
+  const r = await commands.createCraftProject(name);
+  if (r.status === "ok") {
+    _craftProjects = [..._craftProjects, r.data];
+    return { project: r.data, error: null };
+  }
+  return { project: null, error: errText(r.error) };
+}
+
+export async function updateProject(
+  id: string,
+  name: string,
+  notes: string | null,
+): Promise<string | null> {
+  const r = await commands.updateCraftProject(id, name, notes);
+  if (r.status === "ok") {
+    if (r.data) {
+      const updated = r.data;
+      _craftProjects = _craftProjects.map((p) => (p.id === updated.id ? updated : p));
+    }
+    return null;
+  }
+  return errText(r.error);
+}
+
+/** Delete a project. Members are un-filed (project_id → null) server-side; we
+ *  mirror that locally so the plan view stays consistent without a refetch. */
+export async function deleteProject(id: string): Promise<string | null> {
+  const r = await commands.deleteCraftProject(id);
+  if (r.status === "ok") {
+    _craftProjects = _craftProjects.filter((p) => p.id !== id);
+    _craftPlan = _craftPlan.map((e) => (e.project_id === id ? { ...e, project_id: null } : e));
+    return null;
+  }
+  return errText(r.error);
+}
+
+/** Toggle whether a project counts toward the rollup + reservation. */
+export async function setProjectActive(id: string, active: boolean): Promise<string | null> {
+  _craftProjects = _craftProjects.map((p) => (p.id === id ? { ...p, active } : p));
+  const r = await commands.setCraftProjectActive(id, active);
+  return r.status === "ok" ? null : errText(r.error);
+}
+
+/** Apply a manual project order — `ids` in the new display order. */
+export async function reorderProjects(ids: string[]): Promise<string | null> {
+  const padded = new Map(ids.map((id, i) => [id, String(i).padStart(8, "0")]));
+  _craftProjects = _craftProjects.map((p) =>
+    padded.has(p.id) ? { ...p, sort_key: padded.get(p.id)! } : p,
+  );
+  const r = await commands.reorderCraftProjects(ids);
+  return r.status === "ok" ? null : errText(r.error);
+}
+
+/** Convenience: is this blueprint already in the plan (any project)? */
+export function planHas(blueprintGuid: string): boolean {
+  return _craftPlan.some((e) => e.blueprint_guid === blueprintGuid);
 }

@@ -50,6 +50,110 @@ async missionsByBlueprint() : Promise<Result<Partial<{ [key in string]: MissionR
     else return { status: "error", error: e  as any };
 }
 },
+async listCraftProjects() : Promise<Result<CraftProject[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_craft_projects") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createCraftProject(name: string) : Promise<Result<CraftProject, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_craft_project", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateCraftProject(id: RecordId, name: string, notes: string | null) : Promise<Result<CraftProject | null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_craft_project", { id, name, notes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteCraftProject(id: RecordId) : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_craft_project", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Toggle whether a project counts toward the materials rollup + reservation.
+ */
+async setCraftProjectActive(id: RecordId, active: boolean) : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_craft_project_active", { id, active }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply a manual project order — `ids` in the new display order.
+ */
+async reorderCraftProjects(ids: RecordId[]) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reorder_craft_projects", { ids }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listCraftPlan() : Promise<Result<CraftPlanEntry[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_craft_plan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async addCraftPlanEntry(blueprintGuid: string, projectId: RecordId | null) : Promise<Result<CraftPlanEntry, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_craft_plan_entry", { blueprintGuid, projectId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Overwrite a plan entry's editable fields. The UI sends the full current
+ * state, so a `None` `target_quality` / `project_id` / `notes` means
+ * "Base / Unsorted / no note", not "leave unchanged". `None` return ⇒ no such
+ * entry in the active scope (e.g. deleted concurrently).
+ */
+async updateCraftPlanEntry(id: RecordId, projectId: RecordId | null, quantity: number, targetQuality: number | null, notes: string | null) : Promise<Result<CraftPlanEntry | null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_craft_plan_entry", { id, projectId, quantity, targetQuality, notes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply a manual entry order — `ids` in the new display order (one group's
+ * worth, or any subset).
+ */
+async reorderCraftPlan(ids: RecordId[]) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reorder_craft_plan", { ids }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async removeCraftPlanEntry(id: RecordId) : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_craft_plan_entry", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listOwned() : Promise<Result<OwnedBlueprint[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_owned") };
@@ -626,6 +730,59 @@ transform: ModifierTransform;
  * contains the quality (else the nearest), then linearly interpolating.
  */
 ranges: ModifierRange[] }
+/**
+ * One planned craft — "make N copies of this blueprint['s item], to (at least)
+ * this quality." The reservation/coverage ledger is *not* stored here; the UI
+ * derives it from the plan + the live resource inventory. The same blueprint
+ * may appear in several entries (e.g. once per project).
+ */
+export type CraftPlanEntry = { id: RecordId; 
+/**
+ * Owning project, or `None` for an "Unsorted" entry.
+ */
+project_id: RecordId | null; 
+/**
+ * The `BpView` record guid this plans to craft.
+ */
+blueprint_guid: string; 
+/**
+ * How many copies to make — the recipe cost is multiplied by this.
+ */
+quantity: number; 
+/**
+ * Target output quality `0..=1000`. `None` ⇒ Base (500). Materials below
+ * this quality don't count toward the entry (a quality, not quantity, gate).
+ */
+target_quality: number | null; 
+/**
+ * Lexicographic manual-ordering key within the entry's group — also its
+ * allocation priority (earlier entries claim materials first).
+ */
+sort_key: string; notes: string | null; platform: Platform; 
+/**
+ * FK to `accounts.id`.
+ */
+account_id: RecordId; created_at: string; updated_at: string }
+/**
+ * A named group of planned crafts (a loadout, an armour set). Pure grouping +
+ * rollup; deleting one un-files its members rather than dropping them. Scoped
+ * by `(account_id, platform)` like every personal-state row.
+ */
+export type CraftProject = { id: RecordId; name: string; notes: string | null; 
+/**
+ * Lexicographic manual-ordering key. Also the project's allocation
+ * priority (earlier projects claim materials first).
+ */
+sort_key: string; 
+/**
+ * Whether this project counts toward the materials rollup + reservation.
+ * An inactive project is "parked" — shown, but it doesn't reserve.
+ */
+active: boolean; platform: Platform; 
+/**
+ * FK to `accounts.id`.
+ */
+account_id: RecordId; created_at: string; updated_at: string }
 /**
  * The four authored difficulty axes, each a `1..=8` level (`0` = unparsed).
  * Hidden from players; surfaced for tooltip / sort, and the payout's driver.

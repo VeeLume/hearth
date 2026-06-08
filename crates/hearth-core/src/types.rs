@@ -186,6 +186,54 @@ pub struct WishlistEntry {
     pub added_at: DateTime<Utc>,
 }
 
+/// A named group of planned crafts (a loadout, an armour set). Pure grouping +
+/// rollup; deleting one un-files its members rather than dropping them. Scoped
+/// by `(account_id, platform)` like every personal-state row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CraftProject {
+    pub id: RecordId,
+    pub name: String,
+    pub notes: Option<String>,
+    /// Lexicographic manual-ordering key. Also the project's allocation
+    /// priority (earlier projects claim materials first).
+    pub sort_key: String,
+    /// Whether this project counts toward the materials rollup + reservation.
+    /// An inactive project is "parked" — shown, but it doesn't reserve.
+    pub active: bool,
+    pub platform: Platform,
+    /// FK to `accounts.id`.
+    pub account_id: RecordId,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One planned craft — "make N copies of this blueprint['s item], to (at least)
+/// this quality." The reservation/coverage ledger is *not* stored here; the UI
+/// derives it from the plan + the live resource inventory. The same blueprint
+/// may appear in several entries (e.g. once per project).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CraftPlanEntry {
+    pub id: RecordId,
+    /// Owning project, or `None` for an "Unsorted" entry.
+    pub project_id: Option<RecordId>,
+    /// The `BpView` record guid this plans to craft.
+    pub blueprint_guid: String,
+    /// How many copies to make — the recipe cost is multiplied by this.
+    pub quantity: i32,
+    /// Target output quality `0..=1000`. `None` ⇒ Base (500). Materials below
+    /// this quality don't count toward the entry (a quality, not quantity, gate).
+    pub target_quality: Option<i32>,
+    /// Lexicographic manual-ordering key within the entry's group — also its
+    /// allocation priority (earlier entries claim materials first).
+    pub sort_key: String,
+    pub notes: Option<String>,
+    pub platform: Platform,
+    /// FK to `accounts.id`.
+    pub account_id: RecordId,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Lean view of a mission **template** for the Missions UI.
 ///
 /// Built from `sc_missions::Mission` (+ its `BlueprintPools` / `Localities`)

@@ -111,7 +111,7 @@
   {#snippet subtitle()}
     {#if loading}Loading…{:else}{materialCount} material{materialCount === 1 ? "" : "s"}{#if itemCount} · {itemCount} crafting item{itemCount === 1 ? "" : "s"}{/if}{/if}
   {/snippet}
-  <a class="craft-link" href="/crafting">What can I craft →</a>
+  <a class="craft-link" href="/crafting?view=craftable">What can I craft →</a>
 </PageHeader>
 
 {#if loading}

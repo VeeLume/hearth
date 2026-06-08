@@ -15,7 +15,8 @@
         "title": "Hearth",
         "width": 1100,
         "height": 750,
-        "backgroundColor": "#131316"
+        "backgroundColor": "#131316",
+        "dragDropEnabled": false
       }
     ],
     "security": {
