@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-08
+
 ### Added
 
 - **Crafting planner — projects, reservations, quality targets.** The Crafting
