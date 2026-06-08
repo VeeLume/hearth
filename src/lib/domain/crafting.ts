@@ -4,7 +4,7 @@
 // property's display transform; quality is interactive (a slider), so the
 // evaluation has to happen here, live, as the slider moves.
 
-import type { ModifierRange, ModifierTransform } from "$lib/ipc";
+import type { ModifierRange, ModifierTransform, ProductStat, RecipeSlot } from "$lib/ipc";
 
 /** The quality presets the calculator offers. (SCMDB's "Free" is a snap-vs-free
  *  slider *mode*, not a quality value — omitted until the quality bands are
@@ -102,4 +102,92 @@ export function rangeDescriptor(r: ModifierRange, defaultQuality: number): strin
   const v = (n: number) => (r.additive ? n.toFixed(0) : n.toFixed(2));
   const op = r.additive ? "+" : "×";
   return `Q ${r.start_quality}–${r.end_quality} · ${op}${v(r.at_start)}→${v(r.at_end)} · Base ${defaultQuality}`;
+}
+
+// ── Product stats ──────────────────────────────────────────────────────────
+// The crafted item's final stats: its base value reshaped by *all* the slots'
+// modifiers for a property, aggregated. The backend ships the base
+// (`ProductStat`) + the per-slot curves (`RecipeSlot.modifiers`); aggregation
+// runs here so it tracks the per-slot quality sliders live. Mirror of
+// sc-crafting's `Blueprints::product_stats` — additive-delta across slots
+// (`factor = 1 + Σ(factorᵢ − 1)`, the in-game rule, *not* multiplicative).
+
+/** A product stat evaluated against the current per-slot qualities. */
+export type ProductStatResult = {
+  /** Aggregate multiplicative factor (1 = no change). */
+  factor: number;
+  /** Aggregate additive bonus (0 for pure-multiplier stats). */
+  additive: number;
+  /** `base × factor + additive`, or `null` when the base is unknown. */
+  modified: number | null;
+  /** Percent change of the value (`base → modified`). `null` when unchanged. */
+  pct: number | null;
+  /** Whether the change is a buff (better item), per the stat's direction.
+   *  `true` → green, `false` → red, `null` → no change / unknown direction. */
+  improved: boolean | null;
+};
+
+/** Evaluate one product stat: gather every slot modifier driving its gameplay
+ *  property (matched by `gpp_guid`), evaluate each at *that slot's* quality, and
+ *  aggregate additively across slots. An unmodified row (`gpp_guid == null`)
+ *  short-circuits to no change. */
+export function evalProductStat(
+  ps: ProductStat,
+  slots: RecipeSlot[],
+  qualities: number[],
+  defaultQuality: number,
+): ProductStatResult {
+  let factor = 1;
+  let additive = 0;
+  if (ps.gpp_guid != null) {
+    slots.forEach((slot, i) => {
+      const q = qualities[i] ?? defaultQuality;
+      for (const m of slot.modifiers) {
+        if (m.gpp_guid !== ps.gpp_guid) continue;
+        const eff = evalModifier(m.ranges, q);
+        if (!eff) continue;
+        if (eff.additive) additive += eff.value;
+        else factor += eff.value - 1;
+      }
+    });
+  }
+  const modified = ps.base != null ? ps.base * factor + additive : null;
+  // Percent change of the displayed value. With base: (modified − base)/base
+  // (= factor − 1 + additive/base, sign-stable for negative bases like temp);
+  // without a base: the bare factor delta.
+  const changed =
+    modified != null && ps.base != null
+      ? Math.abs(modified - ps.base) > 1e-6
+      : Math.abs(factor - 1) > 1e-6;
+  let pct: number | null = null;
+  let improved: boolean | null = null;
+  if (changed) {
+    pct =
+      ps.base != null && ps.base !== 0
+        ? ((modified! - ps.base) / Math.abs(ps.base)) * 100
+        : (factor - 1) * 100;
+    // Did the underlying value go up? (Real direction, robust to negative base.)
+    const valueUp = ps.base != null && modified != null ? modified > ps.base : factor > 1;
+    improved = ps.higher_is_better == null ? pct > 0 : valueUp === ps.higher_is_better;
+  }
+  return { factor, additive, modified, pct, improved };
+}
+
+/** Format an absolute stat value with its unit suffix (the suffix carries its
+ *  own leading space where appropriate, so `"650" + " RPM"`, `"0.28" + "°"`). */
+export function formatStatValue(value: number, unit: string): string {
+  return `${trimNum(value)}${unit}`;
+}
+
+/** Plain number, trimmed to a readable precision (no trailing zeros). */
+function trimNum(value: number): string {
+  const abs = Math.abs(value);
+  const s = abs >= 100 ? value.toFixed(0) : abs >= 1 ? value.toFixed(2) : value.toFixed(3);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
+/** A signed percent string, e.g. `+10.00%` / `-20.00%`. */
+export function formatStatPct(pct: number): string {
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(2)}%`;
 }

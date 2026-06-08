@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Product Stats in the recipe view.** The recipe's reserved *Product Stats*
+  panel now shows the crafted item's **final stats** — each base value (fire
+  rate, damage, recoil, armor mitigation, integrity, quantum speed, shield HP,
+  …) reshaped by the materials' quality, with the percent change. It recomputes
+  live as you drag the slot quality sliders, so you can see exactly what a
+  higher- or lower-quality material does to the finished item. Covers FPS
+  weapons, armor, ship components, and ship weapons; properties with no absolute
+  base in the game data (tractor / hull-scraping) show the percent change only.
+
+### Changed
+
+- Resolves the v0.4.0 "final item stats aren't computed yet" limitation — the
+  gameplay-property → base-stat link now ships as a curated mapping in
+  sc-holotable v0.14.0.
+
 ## [0.4.0] - 2026-06-07
 
 ### Added

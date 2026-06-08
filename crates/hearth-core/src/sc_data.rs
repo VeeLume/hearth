@@ -10,15 +10,22 @@
 //! AppHandle / async runtime to be useful). Stage 2 wires the loader
 //! to call the adapters here.
 
+use std::collections::{HashMap, HashSet};
+
+use sc_holotable::armor::{Armor, ArmorStats, DamageResistance, ResistanceEntry};
 use sc_holotable::asset::{Guid, LocaleMap, class_crc};
 use sc_holotable::crafting::{
     Blueprint, Cost, DisplayTransformation, Duration as ScDuration, GameplayProperties,
-    GameplayPropertyModifier, ItemCost, Recipe as ScRecipe, ResourceCost, SlotName, ValueRange,
+    GameplayPropertyModifier, GameplayStat, ItemCost, Recipe as ScRecipe, ResourceCost, SlotName,
+    ValueRange,
 };
+use sc_holotable::fps_weapons::{Damage as FpsDamage, FpsWeaponStats, FpsWeapons};
+use sc_holotable::ship_components::{ShipComponentStats, ShipComponents};
+use sc_holotable::ship_weapons::{Damage as ShipDamage, ShipWeaponStats, ShipWeapons};
 
 use crate::types::{
     BpView, CraftDetail, CraftModifier, Ingredient, IngredientKind, ModifierRange,
-    ModifierTransform, Recipe, RecipeSlot,
+    ModifierTransform, ProductStat, Recipe, RecipeSlot,
 };
 
 /// Convert a `sc_crafting::Blueprint` to the lean `BpView` shape sent
@@ -138,19 +145,24 @@ fn ingredient_from_item_cost(ic: &ItemCost) -> Option<Ingredient> {
 /// Project a blueprint's recipe into the rich per-slot [`CraftDetail`] used by
 /// the crafting calculator. Unlike [`project_recipe`] (which flattens the cost
 /// tree to a straight ingredient list for the catalog), this preserves the
-/// **named material slots** and their **gameplay-property modifier curves**.
+/// **named material slots** and their **gameplay-property modifier curves**,
+/// plus the crafted item's **product-stat sheet** (its full base stats, with the
+/// recipe-reshaped ones linked to their modifiers).
 ///
 /// `gpps` resolves a modifier's property GUID to its display name / unit /
-/// transform; `locale` resolves those keys to strings. `default_quality` is
-/// the global `CraftingGlobalParams.default_composition_quality`, carried onto
-/// the detail so a single fetch is self-contained. Ingredient *names* are left
-/// `None` for the loader to fill (same as [`bp_view`]).
+/// transform / typed stat; `sheets` supplies the crafted item's full base-stat
+/// sheet (the per-domain `FpsWeapons` / `Armor` / `ShipComponents` /
+/// `ShipWeapons` indexes); `locale` resolves the display keys to strings.
+/// `default_quality` is the global `CraftingGlobalParams.default_composition_quality`,
+/// carried onto the detail so a single fetch is self-contained. Ingredient
+/// *names* are left `None` for the loader to fill (same as [`bp_view`]).
 ///
 /// Returns `None` when the blueprint has no tier-0 recipe; a recipe with no
 /// resolvable slots yields a `CraftDetail` with an empty `slots` vec.
 pub fn craft_detail(
     blueprint: &Blueprint,
     gpps: &GameplayProperties,
+    sheets: &BaseStatSheets,
     locale: &LocaleMap,
     default_quality: i32,
 ) -> Option<CraftDetail> {
@@ -163,6 +175,9 @@ pub fn craft_detail(
     {
         collect_slots(mandatory, &mut raw);
     }
+
+    let entity_guid = blueprint.crafted_entity_guid();
+    let product_stats = build_product_stats(&raw, gpps, sheets, locale, entity_guid.as_ref());
 
     let slots = raw
         .into_iter()
@@ -182,7 +197,365 @@ pub fn craft_detail(
         craft_time_seconds,
         default_quality,
         slots,
+        product_stats,
     })
+}
+
+/// Build the crafted item's product-stat sheet: its **full base stats** overlaid
+/// with the recipe's gameplay-property modifiers. Base rows come from the
+/// crafted entity's domain sheet ([`BaseStatSheets::rows_for`]); each row that
+/// matches a recipe modifier (by typed [`GameplayStat`]) carries that modifier's
+/// `gpp_guid` + transform so the UI aggregates it live against the quality
+/// sliders. Recipe modifiers with no base row (tractor / hull-scraping — no
+/// static absolute) are appended as percent-only rows. Returns empty when the
+/// recipe touches no stats and the item has no base sheet.
+fn build_product_stats(
+    raw: &[RawSlot],
+    gpps: &GameplayProperties,
+    sheets: &BaseStatSheets,
+    locale: &LocaleMap,
+    entity: Option<&Guid>,
+) -> Vec<ProductStat> {
+    // The recipe's distinct gameplay properties (first-seen order), and the
+    // typed stat each maps to — the overlay key onto the base rows. Keyed by the
+    // stat's debug string (GameplayStat isn't Hash upstream); stable both sides.
+    let mut seen = HashSet::new();
+    let mut recipe_gpps: Vec<Guid> = Vec::new();
+    let mut stat_to_gpp: HashMap<String, Guid> = HashMap::new();
+    for rs in raw {
+        for m in &rs.modifiers {
+            if m.value_ranges.is_empty() {
+                continue;
+            }
+            if let Some(g) = m.gameplay_property
+                && seen.insert(g)
+            {
+                recipe_gpps.push(g);
+                if let Some(p) = gpps.get(&g) {
+                    stat_to_gpp.entry(stat_key(&p.stat())).or_insert(g);
+                }
+            }
+        }
+    }
+
+    // Base-stat rows from the crafted item's domain sheet, each overlaid with
+    // the recipe modifier that drives it (if any).
+    let base_rows = entity.map(|e| sheets.rows_for(e)).unwrap_or_default();
+    let mut out: Vec<ProductStat> = Vec::with_capacity(base_rows.len() + recipe_gpps.len());
+    let mut covered: HashSet<String> = HashSet::new();
+    for r in base_rows {
+        let key = r.stat.as_ref().map(stat_key);
+        if let Some(k) = &key {
+            covered.insert(k.clone());
+        }
+        let gpp = key.as_ref().and_then(|k| stat_to_gpp.get(k)).copied();
+        out.push(ProductStat {
+            group: r.group.map(str::to_owned),
+            label: r.label,
+            gpp_guid: gpp.map(|g| guid_string(&g)),
+            unit: r.unit.to_owned(),
+            higher_is_better: r.stat.as_ref().and_then(higher_is_better),
+            base: Some(r.base),
+        });
+    }
+
+    // Recipe properties with no base row (no static absolute) → percent-only.
+    for g in recipe_gpps {
+        let stat = gpps.get(&g).map(|p| p.stat());
+        if let Some(s) = &stat
+            && covered.contains(&stat_key(s))
+        {
+            continue;
+        }
+        let label = gpps
+            .get(&g)
+            .and_then(|p| locale.resolve(&p.property_name_key))
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "Effect".to_owned());
+        out.push(ProductStat {
+            group: None,
+            label,
+            gpp_guid: Some(guid_string(&g)),
+            unit: String::new(),
+            higher_is_better: stat.as_ref().and_then(higher_is_better),
+            base: None,
+        });
+    }
+
+    out
+}
+
+/// Whether a *higher* value is better for a [`GameplayStat`] — the buff/nerf
+/// sense the UI colours by. Recoil / spread / quantum-fuel / cold-protection are
+/// lower-is-better (a decrease is a buff); the rest are higher-is-better.
+/// `None` for unmodelled stats (the UI falls back to raw sign).
+fn higher_is_better(stat: &GameplayStat) -> Option<bool> {
+    use GameplayStat::*;
+    Some(match stat {
+        WeaponFireRate | WeaponDamage | ArmorDamageMitigation | ArmorTemperatureMax
+        | ArmorRadiationDissipation | Integrity | QuantumSpeed | ShieldMaxHealth
+        | CoolantGeneration | PowerGeneration | RadarMinAimAssist | RadarMaxAimAssist => true,
+        WeaponRecoilKick | WeaponRecoilHandling | WeaponRecoilSmoothness | WeaponSpread
+        | QuantumFuelRequirement | ArmorTemperatureMin => false,
+        Unknown(_) => return None,
+    })
+}
+
+/// Stable string key for a [`GameplayStat`] (it isn't `Hash`/`Eq`-keyable
+/// upstream). The debug form is stable across both match sides.
+fn stat_key(stat: &GameplayStat) -> String {
+    format!("{stat:?}")
+}
+
+/// The per-domain base-stat sheets, bundled so [`craft_detail`] can resolve a
+/// crafted item's full base stats regardless of its domain (a crafted entity is
+/// covered by exactly one sheet).
+pub struct BaseStatSheets<'a> {
+    pub fps_weapons: &'a FpsWeapons,
+    pub armor: &'a Armor,
+    pub ship_components: &'a ShipComponents,
+    pub ship_weapons: &'a ShipWeapons,
+}
+
+impl BaseStatSheets<'_> {
+    /// Flatten the crafted entity's base-stat sheet into display rows (empty if
+    /// no domain sheet covers it).
+    fn rows_for(&self, entity: &Guid) -> Vec<BaseStatRow> {
+        if let Some(s) = self.fps_weapons.get(entity) {
+            fps_weapon_rows(s)
+        } else if let Some(s) = self.armor.get(entity) {
+            armor_rows(s)
+        } else if let Some(s) = self.ship_components.get(entity) {
+            ship_component_rows(s)
+        } else if let Some(s) = self.ship_weapons.get(entity) {
+            ship_weapon_rows(s)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// One base-stat row before recipe-modifier overlay: display label + unit + base
+/// value (display units), and the typed stat it maps to (for matching a recipe
+/// modifier). `stat = None` for stats no recipe modifies (always shown as-is).
+struct BaseStatRow {
+    group: Option<&'static str>,
+    label: String,
+    unit: &'static str,
+    stat: Option<GameplayStat>,
+    base: f32,
+}
+
+fn row(
+    group: Option<&'static str>,
+    label: impl Into<String>,
+    unit: &'static str,
+    stat: Option<GameplayStat>,
+    base: f32,
+) -> BaseStatRow {
+    BaseStatRow {
+        group,
+        label: label.into(),
+        unit,
+        stat,
+        base,
+    }
+}
+
+/// Largest non-zero damage component → its type name; the value is the total
+/// across all types (mirrors `GameplayStat::WeaponDamage` = `Damage::total`).
+fn dominant_damage(
+    phys: f32,
+    energy: f32,
+    distortion: f32,
+    thermal: f32,
+    bio: f32,
+    stun: f32,
+    total: f32,
+) -> (&'static str, f32) {
+    let kinds = [
+        ("Physical", phys),
+        ("Energy", energy),
+        ("Distortion", distortion),
+        ("Thermal", thermal),
+        ("Biochemical", bio),
+        ("Stun", stun),
+    ];
+    let dom = kinds
+        .into_iter()
+        .fold(("", 0.0_f32), |best, cur| if cur.1 > best.1 { cur } else { best });
+    (dom.0, total)
+}
+
+fn damage_label(ty: &str, per: &str) -> String {
+    if ty.is_empty() {
+        format!("Damage / {per}")
+    } else {
+        format!("{ty} Damage / {per}")
+    }
+}
+
+fn fps_weapon_rows(s: &FpsWeaponStats) -> Vec<BaseStatRow> {
+    let mut out = Vec::new();
+    if let Some(fr) = s.fire_rate {
+        out.push(row(None, "Fire Rate", " RPM", Some(GameplayStat::WeaponFireRate), fr as f32));
+    }
+    if let Some(d) = &s.damage {
+        let (ty, val) = fps_dominant(d);
+        out.push(row(None, damage_label(ty, "Shot"), "", Some(GameplayStat::WeaponDamage), val));
+    }
+    if let Some(v) = s.recoil_pitch {
+        out.push(row(None, "Recoil Pitch", "°", Some(GameplayStat::WeaponRecoilKick), v));
+    }
+    if let Some(v) = s.recoil_yaw {
+        out.push(row(None, "Recoil Yaw", "°", Some(GameplayStat::WeaponRecoilHandling), v));
+    }
+    if let Some(v) = s.recoil_smooth {
+        out.push(row(None, "Recoil Smoothing", " s", Some(GameplayStat::WeaponRecoilSmoothness), v));
+    }
+    if let Some(v) = s.spread_max {
+        out.push(row(None, "Spread", "°", Some(GameplayStat::WeaponSpread), v));
+    }
+    if let Some(v) = s.ammo_speed {
+        out.push(row(None, "Ammo Speed", " m/s", None, v));
+    }
+    if let Some(v) = s.mag_size {
+        out.push(row(None, "Magazine", "", None, v as f32));
+    }
+    out
+}
+
+fn fps_dominant(d: &FpsDamage) -> (&'static str, f32) {
+    dominant_damage(
+        d.physical,
+        d.energy,
+        d.distortion,
+        d.thermal,
+        d.biochemical,
+        d.stun,
+        d.total(),
+    )
+}
+
+fn ship_dominant(d: &ShipDamage) -> (&'static str, f32) {
+    dominant_damage(
+        d.physical,
+        d.energy,
+        d.distortion,
+        d.thermal,
+        d.biochemical,
+        d.stun,
+        d.total(),
+    )
+}
+
+fn armor_rows(s: &ArmorStats) -> Vec<BaseStatRow> {
+    let mut out = Vec::new();
+    if let Some(dr) = &s.damage_resistance {
+        for (name, entry) in resistance_entries(dr) {
+            if let Some(e) = entry {
+                // Mitigation fraction (1 − damage-taken multiplier), shown as %.
+                let mitigation = (1.0 - e.multiplier) * 100.0;
+                out.push(row(
+                    Some("Damage Resistance"),
+                    name,
+                    "%",
+                    Some(GameplayStat::ArmorDamageMitigation),
+                    mitigation,
+                ));
+            }
+        }
+    }
+    if let Some(v) = s.temp_resistance_min {
+        out.push(row(Some("Temperature"), "Min", "°C", Some(GameplayStat::ArmorTemperatureMin), v));
+    }
+    if let Some(v) = s.temp_resistance_max {
+        out.push(row(Some("Temperature"), "Max", "°C", Some(GameplayStat::ArmorTemperatureMax), v));
+    }
+    if let Some(v) = s.radiation_dissipation {
+        out.push(row(
+            Some("Radiation"),
+            "Dissipation",
+            " REM/s",
+            Some(GameplayStat::ArmorRadiationDissipation),
+            v,
+        ));
+    }
+    if let Some(v) = s.radiation_capacity {
+        out.push(row(Some("Radiation"), "Capacity", " REM", None, v));
+    }
+    out
+}
+
+fn resistance_entries(
+    dr: &DamageResistance,
+) -> [(&'static str, &Option<ResistanceEntry>); 6] {
+    [
+        ("Physical", &dr.physical),
+        ("Energy", &dr.energy),
+        ("Distortion", &dr.distortion),
+        ("Thermal", &dr.thermal),
+        ("Biochemical", &dr.biochemical),
+        ("Stun", &dr.stun),
+    ]
+}
+
+fn ship_component_rows(s: &ShipComponentStats) -> Vec<BaseStatRow> {
+    let mut out = Vec::new();
+    if let Some(v) = s.integrity_hp {
+        out.push(row(None, "Integrity", " HP", Some(GameplayStat::Integrity), v));
+    }
+    if let Some(v) = s.quantum_drive_speed {
+        out.push(row(None, "Quantum Speed", " Mm/s", Some(GameplayStat::QuantumSpeed), v));
+    }
+    if let Some(v) = s.quantum_fuel_requirement {
+        out.push(row(
+            None,
+            "Quantum Fuel / Distance",
+            "",
+            Some(GameplayStat::QuantumFuelRequirement),
+            v,
+        ));
+    }
+    if let Some(v) = s.shield_max_health {
+        out.push(row(None, "Shield Capacity", " HP", Some(GameplayStat::ShieldMaxHealth), v));
+    }
+    if let Some(v) = s.shield_regen {
+        out.push(row(None, "Shield Regen", " HP/s", None, v));
+    }
+    if let Some(v) = s.coolant_rate {
+        out.push(row(None, "Coolant Output", "/s", Some(GameplayStat::CoolantGeneration), v));
+    }
+    if let Some(v) = s.power_output {
+        out.push(row(None, "Power Output", " pips", Some(GameplayStat::PowerGeneration), v));
+    }
+    if let Some(v) = s.radar_aim_assist_min {
+        out.push(row(None, "Aim-Assist (Min)", " m", Some(GameplayStat::RadarMinAimAssist), v));
+    }
+    if let Some(v) = s.radar_aim_assist_max {
+        out.push(row(None, "Aim-Assist (Max)", " m", Some(GameplayStat::RadarMaxAimAssist), v));
+    }
+    out
+}
+
+fn ship_weapon_rows(s: &ShipWeaponStats) -> Vec<BaseStatRow> {
+    let mut out = Vec::new();
+    if let Some(v) = s.integrity_hp {
+        out.push(row(None, "Integrity", " HP", Some(GameplayStat::Integrity), v));
+    }
+    if let Some(d) = &s.damage {
+        let (ty, val) = ship_dominant(d);
+        let per = if s.is_beam { "s" } else { "Shot" };
+        out.push(row(None, damage_label(ty, per), "", Some(GameplayStat::WeaponDamage), val));
+    }
+    if let Some(fr) = s.fire_rate {
+        out.push(row(None, "Fire Rate", " RPM", Some(GameplayStat::WeaponFireRate), fr as f32));
+    }
+    if let Some(v) = s.ammo_speed {
+        out.push(row(None, "Ammo Speed", " m/s", None, v));
+    }
+    out
 }
 
 /// A material slot discovered in the cost tree, before locale/property
@@ -275,6 +648,7 @@ fn build_modifier(
         .unwrap_or_else(modifier_transform_raw);
     let ranges = m.value_ranges.iter().filter_map(map_range).collect();
     CraftModifier {
+        gpp_guid: m.gameplay_property.as_ref().map(guid_string),
         property_name,
         unit_format,
         transform,

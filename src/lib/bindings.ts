@@ -580,7 +580,18 @@ default_quality: number;
 /**
  * One entry per named material slot, in the recipe's declared order.
  */
-slots: RecipeSlot[] }
+slots: RecipeSlot[]; 
+/**
+ * The crafted item's **product stats** — its base gameplay-stat values
+ * reshaped by the recipe's per-material modifiers. One entry per distinct
+ * gameplay property the recipe touches; the per-slot modifier curves stay
+ * on [`RecipeSlot::modifiers`] (the UI aggregates them live against the
+ * quality sliders, joining by [`CraftModifier::gpp_guid`]) and this list
+ * carries the [`ProductStat::base`] each aggregate is applied to. Empty
+ * when the recipe drives no stats, or the crafted item's domain has no
+ * base-stat sheet.
+ */
+product_stats: ProductStat[] }
 /**
  * One gameplay property a slot's material quality reshapes, with the curve
  * to evaluate and the transform to display it. Projection of
@@ -588,6 +599,13 @@ slots: RecipeSlot[] }
  * `CraftingGameplayPropertyDef` (display metadata).
  */
 export type CraftModifier = { 
+/**
+ * The gameplay property's GUID hex — the join key to the recipe's
+ * [`ProductStat`] rows ([`ProductStat::gpp_guid`]). Lets the UI gather
+ * every slot modifier that drives a given product stat. `None` when the
+ * modifier carries no property reference.
+ */
+gpp_guid: string | null; 
 /**
  * Resolved property display name ("Recoil Smoothness", "Impact Force").
  * `None` when the property GUID doesn't resolve. Note CIG's display name
@@ -1106,6 +1124,52 @@ export type Platform =
  * Test shards (PTU + EPTU + Tech Preview). Wipes frequently.
  */
 "ptu"
+/**
+ * One row in the crafted item's **product-stat sheet** — its full base stats
+ * (fire rate, damage, recoil, armor resistances, integrity, …), with the rows
+ * the recipe reshapes carrying a link to the modifier curves so the UI can
+ * show the absolute final value (`base × aggregate-factor + aggregate-additive`)
+ * and the percent change. Built from the v0.14.0 per-domain base-stat sheets
+ * (`FpsWeapons` / `Armor` / `ShipComponents` / `ShipWeapons`) overlaid with the
+ * recipe's gameplay-property modifiers; the aggregation runs client-side so it
+ * tracks the per-slot quality sliders live (`src/lib/domain/crafting.ts`).
+ */
+export type ProductStat = { 
+/**
+ * Optional section header for grouped display ("Damage Resistance",
+ * "Temperature", "Radiation", …). `None` → ungrouped (a flat row).
+ */
+group: string | null; 
+/**
+ * Display label ("Fire Rate", "Recoil Pitch", "Physical Resistance").
+ */
+label: string; 
+/**
+ * Join key — the gameplay property's GUID hex the recipe modifies this
+ * stat through. Matches the `gpp_guid` on each [`CraftModifier`], so the UI
+ * can gather every slot modifier that drives this stat and aggregate them.
+ * `None` when the recipe doesn't touch this stat (an unmodified base row,
+ * shown as-is).
+ */
+gpp_guid: string | null; 
+/**
+ * Unit suffix, including any leading space (`" RPM"`, `"°"`, `"%"`, `" HP"`,
+ * `" Mm/s"`). Empty when unitless. Appended straight after the value.
+ */
+unit: string; 
+/**
+ * Whether a *higher* value is better for this stat — drives the buff/nerf
+ * colour. A drop in a lower-is-better stat (recoil, spread, quantum-fuel)
+ * is a **buff** and should read green, not red. `None` when the direction
+ * is unknown (an unmodelled property); the UI then colours by raw sign.
+ */
+higher_is_better: boolean | null; 
+/**
+ * The crafted item's base value for this stat, in display units. `None` →
+ * percent-only (no absolute base in static data, e.g. tractor /
+ * hull-scraping); the UI then shows just the percent change.
+ */
+base: number | null }
 /**
  * Flat projection of a `sc_crafting::Blueprint.tiers[0].recipe` shaped
  * for the catalog UI. Today's SC 4.8 data is uniformly

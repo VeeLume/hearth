@@ -5,7 +5,14 @@
   import { nameOf, formatCraftTime, missionsLink } from "$lib/domain/catalog";
   import { categoryFor } from "$lib/domain/categories";
   import { coverageFor, coverageForIngredient } from "$lib/domain/inventory";
-  import { PRESETS, presetQuality, type Preset } from "$lib/domain/crafting";
+  import {
+    PRESETS,
+    presetQuality,
+    evalProductStat,
+    formatStatValue,
+    formatStatPct,
+    type Preset,
+  } from "$lib/domain/crafting";
   import {
     craftDefaultQuality,
     DEFAULT_QUALITY_OPTIONS,
@@ -124,15 +131,20 @@
     return out;
   });
 
-  // The gameplay properties this recipe's materials reshape — the stats whose
-  // absolute values the (not-yet-bound) Product Stats panel will show. Distinct,
-  // by display name, over slots' effective modifiers.
-  const affectedProps = $derived.by(() => {
-    if (!detail) return [];
-    const set = new Set<string>();
-    for (const s of detail.slots)
-      for (const m of s.modifiers) if (m.property_name && m.ranges.length > 0) set.add(m.property_name);
-    return [...set].sort();
+  // The crafted item's product stats — the full base-stat sheet, each modified
+  // row reshaped by the recipe's per-material modifiers, aggregated live against
+  // the per-slot quality sliders. `groupHead` marks the first row of each
+  // section (Damage Resistance / Temperature / …) for sub-headers.
+  const productStats = $derived.by(() => {
+    const d = detail;
+    if (!d) return [];
+    let prevGroup: string | null = null;
+    return d.product_stats.map((ps) => {
+      const result = evalProductStat(ps, d.slots, qualities, d.default_quality);
+      const groupHead = ps.group && ps.group !== prevGroup ? ps.group : null;
+      prevGroup = ps.group ?? null;
+      return { ps, result, groupHead };
+    });
   });
 
   // Have-materials rollup (only with a synced inventory).
@@ -246,27 +258,53 @@
       </div>
 
       <div class="col-side">
-        <!-- Product Stats — placeholder until the GPP → base-stat-field binding
-             lands. We model the per-material modifiers (shown per slot), but not
-             yet the crafted item's absolute final stats. -->
-        <div class="product-stats">
-          <div class="ps-head">
+        <!-- Product Stats — the crafted item's full stat sheet: its base values
+             reshaped by each material's quality. Aggregated live from the
+             per-slot modifier curves (shown per slot) against the sliders. -->
+        {#if productStats.length > 0}
+          <div class="product-stats">
             <h3>Product Stats</h3>
-            <span class="ps-soon">soon</span>
-          </div>
-          <p class="ps-note">
-            The crafted item's final stats — its base values reshaped by each
-            material's quality. The per-material modifiers are modelled (left);
-            binding them to the item's base stats is still in progress.
-          </p>
-          {#if affectedProps.length > 0}
+            <!-- A single grid (rows use display:contents) so base · → · value ·
+                 % line up in fixed columns instead of shifting per row. -->
             <ul class="ps-list">
-              {#each affectedProps as p (p)}
-                <li><span class="ps-prop">{p}</span><span class="ps-val">—</span></li>
+              {#each productStats as { ps, result, groupHead }, i (i)}
+                {#if groupHead}
+                  <li class="ps-group">{groupHead}</li>
+                {/if}
+                <li class="ps-row">
+                  <span class="ps-prop">{ps.label}</span>
+                  {#if ps.base != null}
+                    {@const changed =
+                      result.modified != null && Math.abs(result.modified - ps.base) > 1e-6}
+                    {#if changed}
+                      <span class="ps-base">{formatStatValue(ps.base, ps.unit)}</span>
+                      <span class="ps-arrow">→</span>
+                      <span class="ps-mod">{formatStatValue(result.modified ?? ps.base, ps.unit)}</span>
+                      <span class="ps-pct" class:down={result.improved === false}
+                        >{result.pct != null ? formatStatPct(result.pct) : ""}</span>
+                    {:else}
+                      <span></span>
+                      <span></span>
+                      <span class="ps-mod">{formatStatValue(ps.base, ps.unit)}</span>
+                      <span></span>
+                    {/if}
+                  {:else}
+                    <span></span>
+                    <span></span>
+                    <span class="ps-mod">
+                      {#if result.pct != null}
+                        <span class="ps-pct" class:down={result.improved === false}>{formatStatPct(result.pct)}</span>
+                      {:else}
+                        <span class="ps-none">—</span>
+                      {/if}
+                    </span>
+                    <span></span>
+                  {/if}
+                </li>
               {/each}
             </ul>
-          {/if}
-        </div>
+          </div>
+        {/if}
 
         {#if missions.length > 0}
           <section class="missions">
@@ -319,64 +357,80 @@
     min-width: 0;
   }
 
-  /* Product Stats placeholder — the absolute final stats, pending the
-     gameplay-property → base-stat binding. */
+  /* Product Stats — the crafted item's absolute final stats: base reshaped by
+     each material's quality, aggregated across slots. */
   .product-stats {
     border: 1px solid var(--line);
     border-radius: 10px;
     background: var(--panel);
     padding: 0.9rem 1rem;
   }
-  .ps-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .ps-head h3 {
-    margin: 0;
+  .product-stats h3 {
+    margin: 0 0 0.6rem;
     font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--ember);
   }
-  .ps-soon {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--warn);
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    padding: 0.05rem 0.45rem;
-  }
-  .ps-note {
-    margin: 0.5rem 0 0;
-    font-size: 0.78rem;
-    color: var(--muted);
-    line-height: 1.45;
-  }
+  /* One grid for the whole sheet so the columns (label · base · → · value · %)
+     line up across every row. Each row sets `display: contents` so its cells
+     become direct items of this grid. */
   .ps-list {
     list-style: none;
-    margin: 0.7rem 0 0;
-    padding: 0.6rem 0 0;
-    border-top: 1px dashed var(--line);
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-  .ps-list li {
-    display: flex;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr auto auto auto auto;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 0.7rem;
+    column-gap: 0.45rem;
+    row-gap: 0.3rem;
+  }
+  .ps-row {
+    display: contents;
+  }
+  /* Section sub-header (Damage Resistance / Temperature / …) — full-width row. */
+  .ps-group {
+    grid-column: 1 / -1;
+    margin-top: 0.5rem;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--faint);
+  }
+  .ps-group:first-child {
+    margin-top: 0;
   }
   .ps-prop {
     font-size: 0.82rem;
     color: var(--text);
   }
-  .ps-val {
+  /* Numeric columns: right-aligned + tabular figures so the digits stack. */
+  .ps-base,
+  .ps-mod,
+  .ps-pct {
+    text-align: right;
     font-size: 0.82rem;
-    color: var(--faint);
     font-variant-numeric: tabular-nums;
+  }
+  .ps-base {
+    color: var(--faint);
+  }
+  .ps-arrow {
+    color: var(--faint);
+    text-align: center;
+  }
+  .ps-mod {
+    color: var(--text);
+  }
+  .ps-none {
+    color: var(--faint);
+  }
+  .ps-pct {
+    font-size: 0.78rem;
+    color: var(--good);
+  }
+  .ps-pct.down {
+    color: var(--ember);
   }
   .back {
     display: inline-block;
@@ -575,12 +629,16 @@
 
   .missions {
     margin-top: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 0.9rem 1rem;
   }
   .missions h3 {
     font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--muted);
+    color: var(--ember);
     margin: 0 0 0.4rem;
   }
   .missions-link {

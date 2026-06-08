@@ -14,9 +14,14 @@ use hearth_core::{
     ItemRewardView, MissionCategoryView, MissionRef, MissionView, PayoutView, PlaceView, RegionView,
     RepRequirementView, RepRewardView, ScripRewardView, ShipSlotView, WaveView,
 };
+use hearth_core::sc_data::BaseStatSheets;
+use sc_holotable::armor::Armor;
 use sc_holotable::asset::{Datacore, LocaleKey, LocaleMap, RecordPaths, class_crc};
 use sc_holotable::crafting::{Blueprints, Categories, GameplayProperties, GlobalParams, Process};
+use sc_holotable::fps_weapons::FpsWeapons;
 use sc_holotable::items::{ItemCatalog, Items};
+use sc_holotable::ship_components::ShipComponents;
+use sc_holotable::ship_weapons::ShipWeapons;
 // NB: `sc_holotable::locations::Locations` (the typed universe index) is named
 // `Locations` and so is `sc_missions::Locations`; we only use the former here.
 use sc_holotable::locations::Locations;
@@ -107,6 +112,19 @@ fn build_blueprints(
     let default_quality = GlobalParams::build(datacore)
         .map(|g| g.default_composition_quality)
         .unwrap_or(500);
+    // Product-stat base sheets (v0.14.0): one T1 per-itemtype index per crafting
+    // domain, bundled so craft_detail can resolve a crafted item's full base
+    // stats regardless of which domain it's in.
+    let fps_weapons = FpsWeapons::build(datacore, &items);
+    let armor = Armor::build(datacore, &items);
+    let ship_components = ShipComponents::build(datacore, &items);
+    let ship_weapons = ShipWeapons::build(datacore, &items);
+    let sheets = BaseStatSheets {
+        fps_weapons: &fps_weapons,
+        armor: &armor,
+        ship_components: &ship_components,
+        ship_weapons: &ship_weapons,
+    };
 
     let mut out = Vec::new();
     let mut craft_details = HashMap::new();
@@ -183,6 +201,7 @@ fn build_blueprints(
         if let Some(mut detail) = hearth_core::sc_data::craft_detail(
             blueprint,
             &gpps,
+            &sheets,
             locale,
             default_quality,
         ) {

@@ -34,8 +34,13 @@ use super::CookedData;
 /// deserializing into a silently-wrong shape. (18: CookedData gains
 /// resource_names / location_names CRC→name maps and BpView ingredients gain
 /// a `crc` match key, for the live resource inventory. 19: CookedData gains
-/// the `craft_details` map — per-slot crafting views for the calculator.)
-const HEARTH_CATALOG_COOK_VERSION: u32 = 19;
+/// the `craft_details` map — per-slot crafting views for the calculator.
+/// 20: CraftDetail gains `product_stats` (crafted-item base stats) + each
+/// CraftModifier gains a `gpp_guid` join key, for the product-stats panel.
+/// 21: product_stats becomes the full base-stat sheet (group/label/unit rows
+/// from the v0.14.0 per-domain sheets), not just recipe-modified properties.
+/// 22: ProductStat swaps `transform` for `higher_is_better` (buff/nerf colour).)
+const HEARTH_CATALOG_COOK_VERSION: u32 = 22;
 
 pub(super) const EXTRACT_SNAPSHOT_NAME: &str = "extract.snap";
 pub(super) const CATALOG_SNAPSHOT_NAME: &str = "catalog.cook";
